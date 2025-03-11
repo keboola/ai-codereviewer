@@ -158,9 +158,10 @@ Examples of NOT helpful comments:
   Same reason as above.
 - "Consider adding a comment explaining..."
   The code should be self-explanatory.
+- "This change is correct..."
+  The code should be correct by design.
 
-ABOVE anything else, DO NOT repeat the same comment multiple times. If a comment has already been made in the
-previous iteration, DO NOT repeat it.
+ABOVE anything else, DO NOT repeat the same comment multiple times. If a comment has already been made in the previous iteration, DO NOT repeat it. DO NOT repeat same comment in the same iteration in any circumstances.
 
 ------
 For the "suggestedAction" field, provide a single word that indicates the action to be taken. Options are:
