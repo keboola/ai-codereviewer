@@ -163,6 +163,8 @@ Examples of NOT helpful comments:
 
 ABOVE anything else, DO NOT repeat the same comment multiple times. If a comment has already been made in the previous iteration, DO NOT repeat it. DO NOT repeat same comment in the same iteration in any circumstances.
 
+DO NOT ever repeat same comment when new commit appears. Never repeat already posted comment. If you do not have any other comments for new commit, then do not comment at all if only possible action is repeat comment.
+
 ------
 For the "suggestedAction" field, provide a single word that indicates the action to be taken. Options are:
 - "approve"
