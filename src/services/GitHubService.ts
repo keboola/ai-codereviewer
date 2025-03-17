@@ -107,28 +107,83 @@ export class GitHubService {
     }
   }
 
-  async getLastReviewedCommit(prNumber: number): Promise<string | null> {
-    const { data: reviews } = await this.octokit.pulls.listReviews({
+  async getLastReviewSubmittedAt(prNumber: number): Promise<string | null> {
+    // Get the first page to check pagination info
+    const firstResponse = await this.octokit.pulls.listReviews({
       owner: this.owner,
       repo: this.repo,
       pull_number: prNumber,
+      per_page: 100,
+      page: 1
     });
 
-    // Find the last review from our bot
-    const lastBotReview = reviews
+    // Get the last page number from the Link header
+    const linkHeader = firstResponse.headers.link;
+
+    // If no link header or only one page, process the first response directly
+    if (!linkHeader) {
+      const botReview = firstResponse.data
+        .reverse()
+        .find(review => review.user?.login === 'github-actions[bot]');
+      
+      return botReview?.submitted_at || null;
+    }
+
+    // Get the last page number
+    const lastPageMatch = linkHeader.match(/page=(\d+)>; rel="last"/);
+    const lastPage = lastPageMatch ? parseInt(lastPageMatch[1], 10) : 1;
+
+    // If only one page, process the first response we already have
+    if (lastPage === 1) {
+      const botReview = firstResponse.data
+        .reverse()
+        .find(review => review.user?.login === 'github-actions[bot]');
+      
+      return botReview?.submitted_at || null;
+    }
+
+    // Multiple pages - start from the last page and move backward
+    for (let page = lastPage; page > 1; page--) {
+      const response = await this.octokit.pulls.listReviews({
+        owner: this.owner,
+        repo: this.repo,
+        pull_number: prNumber,
+        per_page: 100,
+        page
+      });
+
+      const botReview = response.data
+        .reverse()
+        .find(review => review.user?.login === 'github-actions[bot]');
+
+      if (botReview?.submitted_at) {
+        return botReview.submitted_at;
+      }
+    }
+
+    // Check first page last since we're going backwards
+    const botReview = firstResponse.data
       .reverse()
       .find(review => review.user?.login === 'github-actions[bot]');
+    
+    return botReview?.submitted_at || null;
+  }
 
-    if (!lastBotReview) return null;
+  async getLastReviewedCommit(prNumber: number): Promise<string | null> {
+    
+   const lastReviewSubmittedAt = await this.getLastReviewSubmittedAt(prNumber);
+
+    if (!lastReviewSubmittedAt) return null;
 
     // Get the commit SHA at the time of the review
     const { data: commits } = await this.octokit.pulls.listCommits({
       owner: this.owner,
       repo: this.repo,
       pull_number: prNumber,
+      per_page: 100,
     });
 
-    const reviewDate = new Date(lastBotReview.submitted_at!);
+    const reviewDate = new Date(lastReviewSubmittedAt!);
     const lastCommit = commits
       .reverse()
       .find(commit => commit.commit.committer?.date &&
@@ -146,36 +201,69 @@ export class GitHubService {
       comment: string;
     }>;
   }>> {
-    const { data: reviews } = await this.octokit.pulls.listReviews({
-      owner: this.owner,
-      repo: this.repo,
-      pull_number: prNumber,
-    });
+    let allReviews = [];
+    let page = 1;
+    let hasNextPage = true;
 
-    // Filter to bot reviews and fetch their comments
-    const botReviews =reviews.filter(review => review.user?.login === 'github-actions[bot]');
+    // Fetch all reviews with pagination
+    while (hasNextPage) {
+      const response = await this.octokit.pulls.listReviews({
+        owner: this.owner,
+        repo: this.repo,
+        pull_number: prNumber,
+        per_page: 100,
+        page,
+      });
 
+      allReviews.push(...response.data);
+
+      // Check if there's a next page
+      const linkHeader = response.headers.link;
+      hasNextPage = linkHeader?.includes('rel="next"') ?? false;
+      page++;
+    }
+
+    // Filter to bot reviews
+    const botReviews = allReviews.filter(review => review.user?.login === 'github-actions[bot]');
     core.debug(`Found ${botReviews.length} bot reviews`);
 
     const botReviewsWithComments = await Promise.all(
       botReviews.map(async review => {
-        const { data: comments } = await this.octokit.pulls.listReviewComments({
-          owner: this.owner,
-          repo: this.repo,
-          pull_number: prNumber,
-          review_id: review.id
+        let allComments = [];
+        let commentPage = 1;
+        let hasNextCommentPage = true;
+
+        // Fetch all comments for each review with pagination
+        while (hasNextCommentPage) {
+          const commentsResponse = await this.octokit.pulls.listReviewComments({
+            owner: this.owner,
+            repo: this.repo,
+            pull_number: prNumber,
+            review_id: review.id,
+            per_page: 100,
+            page: commentPage,
           });
 
-          return {
-            commit: review.commit_id,
-            summary: review.body || '',
-            lineComments: comments.map(comment => ({
-              path: comment.path,
-              line: comment.line || 0,
-              comment: comment.body
-            }))
-          };
-        })
+          allComments.push(...commentsResponse.data);
+
+          // Check if there's a next page of comments
+          const commentLinkHeader = commentsResponse.headers.link;
+          hasNextCommentPage = commentLinkHeader?.includes('rel="next"') ?? false;
+          commentPage++;
+        }
+
+        core.debug(`Found ${allComments.length} comments for review ID ${review.id}`);
+
+        return {
+          commit: review.commit_id,
+          summary: review.body || '',
+          lineComments: allComments.map(comment => ({
+            path: comment.path,
+            line: comment.line || 0,
+            comment: comment.body
+          }))
+        };
+      })
     );
 
     return botReviewsWithComments;
