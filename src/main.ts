@@ -20,7 +20,8 @@ async function main() {
     const approveReviews = core.getBooleanInput('APPROVE_REVIEWS');
     const maxComments = parseInt(core.getInput('MAX_COMMENTS') || '0', 10);
     const projectContext = core.getInput('PROJECT_CONTEXT');
-    const contextFiles = core.getInput('CONTEXT_FILES').split(',').map(f => f.trim());
+    const contextFilesInput = core.getInput('CONTEXT_FILES');
+    const contextFiles = contextFilesInput ? contextFilesInput.split(',').map(f => f.trim()).filter(Boolean) : [];
     const excludePatterns = core.getInput('EXCLUDE_PATTERNS');
 
     // Initialize services

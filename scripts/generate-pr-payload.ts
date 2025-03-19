@@ -5,9 +5,14 @@ import * as dotenv from 'dotenv';
 dotenv.config();
 
 const token = process.env.GITHUB_TOKEN;
-const owner = 'demandio';
-const repo = process.argv[2] || 'simplycodes-extension';
-const pr_number = parseInt(process.argv[3], 10) || 982;
+
+if (!token) {
+  console.warn('\x1b[33mWarning: GITHUB_TOKEN environment variable is not set. Some GitHub API operations may be rate-limited without authentication.\x1b[0m');
+}
+
+const owner = process.argv[2] || 'keboola';
+const repo = process.argv[3] || 'connection';
+const pr_number = parseInt(process.argv[4], 10) || 982;
 
 if (!owner || !repo || isNaN(pr_number)) {
   console.error('Usage: ts-node generate-pr-payload.ts [owner] [repo] [pr_number]');

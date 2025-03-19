@@ -94,10 +94,10 @@ yarn test
 yarn package
 
 # Generate test PR payload (for e2e testing)
-yarn generate-pr <owner> <repo> <pr_number>
+yarn generate-pr-payload <owner> <repo> <pr_number>
 
 # Run end-to-end tests
-yarn test:e2e <repo> <pr_number>
+yarn test:e2e <owner> <repo> <pr_number>
 ```
 
 ### Testing Locally

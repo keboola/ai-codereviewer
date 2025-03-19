@@ -52,6 +52,7 @@ export class ReviewService {
     // Get full content for each modified file
     const filesWithContent = await Promise.all(
       modifiedFiles.map(async (file) => {
+        console.log('Context for file:', file.path);
         const fullContent = await this.githubService.getFileContent(file.path, prDetails.head);
         return {
           path: file.path,
