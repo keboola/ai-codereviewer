@@ -43,7 +43,7 @@ jobs:
       - uses: actions/checkout@v4
       
       - name: AI Code Review
-        uses: your-username/ai-code-reviewer@main
+        uses: keboola/ai-code-reviewer@main
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           
