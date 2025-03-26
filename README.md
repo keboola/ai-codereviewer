@@ -32,12 +32,13 @@ name: AI Code Review
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [labeled]
 permissions: write-all
 
 jobs:
   review:
     runs-on: ubuntu-latest
+    if: github.event.label.name == 'ai-review'
     steps:
       - uses: actions/checkout@v4
       
@@ -58,7 +59,15 @@ jobs:
           PROJECT_CONTEXT: "This is a Node.js TypeScript project"
           CONTEXT_FILES: "package.json,README.md"
           EXCLUDE_PATTERNS: "**/*.lock,**/*.json,**/*.md"
+      
+      - name: Remove Label
+        uses: mondeja/remove-labels-gh-action@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          labels: ai-review
 ```
+
+With this configuration when you apply tag `ai-review` bot will do review to your PR and then remove tag itself.
 
 ## Configuration
 
