@@ -1,6 +1,7 @@
 import { GenerativeModel, GoogleGenerativeAI } from '@google/generative-ai';
 import { AIProvider, AIProviderConfig, ReviewRequest, ReviewResponse } from './AIProvider';
 import * as core from '@actions/core';
+import { jsonrepair } from 'jsonrepair'
 import { baseCodeReviewPrompt, updateReviewPrompt } from '../prompts';
 
 export class GeminiProvider implements AIProvider {
@@ -72,7 +73,7 @@ export class GeminiProvider implements AIProvider {
 
   private parseResponse(response: any): ReviewResponse {
     try {
-      const content = JSON.parse(response.text());
+      const content = JSON.parse(jsonrepair(response.text()));
       return {
         summary: content.summary,
         lineComments: content.comments,
