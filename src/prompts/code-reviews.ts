@@ -13,6 +13,8 @@ You are an expert code reviewer. Analyze the provided code changes and provide d
 Follow this JSON format:
 ${outputFormat}
 
+DO NOT output the response inside markdown code block, just output the JSON object.
+
 ------
 Understanding the diff:
 - Lines starting with "-" (del) show code that was REMOVED
@@ -42,7 +44,7 @@ For the "summary" field, use Markdown formatting and follow these guidelines:
      * Data integrity risks
      * Production stability threats
 
-   Normal code improvements, refactoring suggestions, or breaking changes 
+   Normal code improvements, refactoring suggestions, or breaking changes
    with clear migration paths should use "Comment" instead.
 
 Examples of when to use each verdict:
