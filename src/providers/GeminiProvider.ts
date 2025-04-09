@@ -73,7 +73,10 @@ export class GeminiProvider implements AIProvider {
 
   private parseResponse(response: any): ReviewResponse {
     try {
-      const content = JSON.parse(jsonrepair(response.text()));
+      const repairedResponse = jsonrepair(response.text());
+      core.info(`Raw response after repair: ${repairedResponse}`);
+      const content = JSON.parse(repairedResponse);
+      core.info(`Parsed response: ${content}`);
       return {
         summary: content.summary,
         lineComments: content.comments,

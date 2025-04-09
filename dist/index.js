@@ -577,7 +577,10 @@ class GeminiProvider {
     }
     parseResponse(response) {
         try {
-            const content = JSON.parse((0, jsonrepair_1.jsonrepair)(response.text()));
+            const repairedResponse = (0, jsonrepair_1.jsonrepair)(response.text());
+            core.info(`Raw response after repair: ${repairedResponse}`);
+            const content = JSON.parse(repairedResponse);
+            core.info(`Parsed response: ${content}`);
             return {
                 summary: content.summary,
                 lineComments: content.comments,
