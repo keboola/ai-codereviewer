@@ -38,7 +38,7 @@ export class GeminiProvider implements AIProvider {
     });
 
     const response = result.response;
-    core.debug(`Raw Gemini response: ${JSON.stringify(response.text(), null, 2)}`);
+    core.info(`Raw Gemini response: ${JSON.stringify(response.text(), null, 2)}`);
 
     const parsedResponse = this.parseResponse(response);
     core.info(`Parsed response: ${JSON.stringify(parsedResponse, null, 2)}`);
