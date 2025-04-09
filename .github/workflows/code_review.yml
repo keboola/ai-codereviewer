@@ -32,7 +32,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           AI_PROVIDER: "google" # or "anthropic" or "google"
           AI_API_KEY: ${{ secrets.GOOGLE_AI_KEY }}
-          AI_MODEL: "gemini-2.0-flash-exp"
+          AI_MODEL: "gemini-2.5-pro-exp-03-25"
           AI_TEMPERATURE: 0.3 # 0 to 1 - higher values = more creativity and variance
           REVIEW_MAX_COMMENTS: 5 # Optional: defaults to 10
           APPROVE_REVIEWS: false # Optional: defaults to false
