@@ -530,6 +530,38 @@ class GeminiProvider {
             },
         });
     }
+    cleanJsonResponse(response) {
+        const possiblePrefixes = ["ny\n```json", "```json"];
+        const suffix = "```";
+        // Check the suffix once first.
+        // If it doesn't end with the suffix, none of the prefix checks will
+        // result in a successfully unwrapped block according to the rules.
+        if (!response.endsWith(suffix)) {
+            return response;
+        }
+        // Iterate through the known prefixes
+        for (const prefix of possiblePrefixes) {
+            if (response.startsWith(prefix)) {
+                // Found a matching prefix AND we already know it ends with the suffix.
+                const startIndex = prefix.length;
+                // Slice from the end of the prefix to the start of the suffix.
+                // Ensure the string is long enough to theoretically contain both,
+                // although startsWith/endsWith should largely guarantee this.
+                if (response.length >= startIndex + suffix.length) {
+                    const contentSlice = response.substring(startIndex, response.length - suffix.length);
+                    // Clean whitespace from the extracted part and return
+                    return contentSlice.trim();
+                }
+                else {
+                    // String ends with suffix and starts with prefix, but is too short. Malformed.
+                    return response; // Return original as it's not validly wrapped
+                }
+            }
+        }
+        // If the loop finishes, it means the string ended with the suffix,
+        // but did not start with any of the known prefixes.
+        return response;
+    }
     async review(request) {
         core.debug(`Sending request to Gemini with prompt structure: ${JSON.stringify(request, null, 2)}`);
         const result = await this.model.generateContent({
@@ -547,7 +579,7 @@ class GeminiProvider {
         });
         const response = result.response;
         core.info(`Raw Gemini response: ${JSON.stringify(response.text(), null, 2)}`);
-        const parsedResponse = this.parseResponse(response);
+        const parsedResponse = this.parseResponse(this.cleanJsonResponse(response.text()));
         core.info(`Parsed response: ${JSON.stringify(parsedResponse, null, 2)}`);
         return parsedResponse;
     }
