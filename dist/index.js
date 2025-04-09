@@ -61,7 +61,8 @@ async function main() {
         const approveReviews = core.getBooleanInput('APPROVE_REVIEWS');
         const maxComments = parseInt(core.getInput('MAX_COMMENTS') || '0', 10);
         const projectContext = core.getInput('PROJECT_CONTEXT');
-        const contextFiles = core.getInput('CONTEXT_FILES').split(',').map(f => f.trim());
+        const contextFilesInput = core.getInput('CONTEXT_FILES');
+        const contextFiles = contextFilesInput ? contextFilesInput.split(',').map(f => f.trim()).filter(Boolean) : [];
         const excludePatterns = core.getInput('EXCLUDE_PATTERNS');
         // Initialize services
         const aiProvider = getProvider(provider);
@@ -145,6 +146,8 @@ You are an expert code reviewer. Analyze the provided code changes and provide d
 Follow this JSON format:
 ${exports.outputFormat}
 
+DO NOT output the response inside markdown code block, just output the JSON object.
+
 ------
 Understanding the diff:
 - Lines starting with "-" (del) show code that was REMOVED
@@ -174,7 +177,7 @@ For the "summary" field, use Markdown formatting and follow these guidelines:
      * Data integrity risks
      * Production stability threats
 
-   Normal code improvements, refactoring suggestions, or breaking changes 
+   Normal code improvements, refactoring suggestions, or breaking changes
    with clear migration paths should use "Comment" instead.
 
 Examples of when to use each verdict:
@@ -514,6 +517,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.GeminiProvider = void 0;
 const generative_ai_1 = __nccwpck_require__(7656);
 const core = __importStar(__nccwpck_require__(7484));
+const jsonrepair_1 = __nccwpck_require__(2555);
 const prompts_1 = __nccwpck_require__(9493);
 class GeminiProvider {
     async initialize(config) {
@@ -542,7 +546,7 @@ class GeminiProvider {
             ]
         });
         const response = result.response;
-        core.debug(`Raw Gemini response: ${JSON.stringify(response.text(), null, 2)}`);
+        core.info(`Raw Gemini response: ${JSON.stringify(response.text(), null, 2)}`);
         const parsedResponse = this.parseResponse(response);
         core.info(`Parsed response: ${JSON.stringify(parsedResponse, null, 2)}`);
         return parsedResponse;
@@ -573,7 +577,7 @@ class GeminiProvider {
     }
     parseResponse(response) {
         try {
-            const content = JSON.parse(response.text());
+            const content = JSON.parse((0, jsonrepair_1.jsonrepair)(response.text()));
             return {
                 summary: content.summary,
                 lineComments: content.comments,
@@ -974,25 +978,68 @@ class GitHubService {
             });
         }
     }
-    async getLastReviewedCommit(prNumber) {
-        const { data: reviews } = await this.octokit.pulls.listReviews({
+    async getLastReviewSubmittedAt(prNumber) {
+        // Get the first page to check pagination info
+        const firstResponse = await this.octokit.pulls.listReviews({
             owner: this.owner,
             repo: this.repo,
             pull_number: prNumber,
+            per_page: 100,
+            page: 1
         });
-        // Find the last review from our bot
-        const lastBotReview = reviews
+        // Get the last page number from the Link header
+        const linkHeader = firstResponse.headers.link;
+        // If no link header or only one page, process the first response directly
+        if (!linkHeader) {
+            const botReview = firstResponse.data
+                .reverse()
+                .find(review => { var _a; return ((_a = review.user) === null || _a === void 0 ? void 0 : _a.login) === 'github-actions[bot]'; });
+            return (botReview === null || botReview === void 0 ? void 0 : botReview.submitted_at) || null;
+        }
+        // Get the last page number
+        const lastPageMatch = linkHeader.match(/page=(\d+)>; rel="last"/);
+        const lastPage = lastPageMatch ? parseInt(lastPageMatch[1], 10) : 1;
+        // If only one page, process the first response we already have
+        if (lastPage === 1) {
+            const botReview = firstResponse.data
+                .reverse()
+                .find(review => { var _a; return ((_a = review.user) === null || _a === void 0 ? void 0 : _a.login) === 'github-actions[bot]'; });
+            return (botReview === null || botReview === void 0 ? void 0 : botReview.submitted_at) || null;
+        }
+        // Multiple pages - start from the last page and move backward
+        for (let page = lastPage; page > 1; page--) {
+            const response = await this.octokit.pulls.listReviews({
+                owner: this.owner,
+                repo: this.repo,
+                pull_number: prNumber,
+                per_page: 100,
+                page
+            });
+            const botReview = response.data
+                .reverse()
+                .find(review => { var _a; return ((_a = review.user) === null || _a === void 0 ? void 0 : _a.login) === 'github-actions[bot]'; });
+            if (botReview === null || botReview === void 0 ? void 0 : botReview.submitted_at) {
+                return botReview.submitted_at;
+            }
+        }
+        // Check first page last since we're going backwards
+        const botReview = firstResponse.data
             .reverse()
             .find(review => { var _a; return ((_a = review.user) === null || _a === void 0 ? void 0 : _a.login) === 'github-actions[bot]'; });
-        if (!lastBotReview)
+        return (botReview === null || botReview === void 0 ? void 0 : botReview.submitted_at) || null;
+    }
+    async getLastReviewedCommit(prNumber) {
+        const lastReviewSubmittedAt = await this.getLastReviewSubmittedAt(prNumber);
+        if (!lastReviewSubmittedAt)
             return null;
         // Get the commit SHA at the time of the review
         const { data: commits } = await this.octokit.pulls.listCommits({
             owner: this.owner,
             repo: this.repo,
             pull_number: prNumber,
+            per_page: 100,
         });
-        const reviewDate = new Date(lastBotReview.submitted_at);
+        const reviewDate = new Date(lastReviewSubmittedAt);
         const lastCommit = commits
             .reverse()
             .find(commit => {
@@ -1003,25 +1050,54 @@ class GitHubService {
         return (lastCommit === null || lastCommit === void 0 ? void 0 : lastCommit.sha) || null;
     }
     async getPreviousReviews(prNumber) {
-        const { data: reviews } = await this.octokit.pulls.listReviews({
-            owner: this.owner,
-            repo: this.repo,
-            pull_number: prNumber,
-        });
-        // Filter to bot reviews and fetch their comments
-        const botReviews = reviews.filter(review => { var _a; return ((_a = review.user) === null || _a === void 0 ? void 0 : _a.login) === 'github-actions[bot]'; });
-        core.debug(`Found ${botReviews.length} bot reviews`);
-        const botReviewsWithComments = await Promise.all(botReviews.map(async (review) => {
-            const { data: comments } = await this.octokit.pulls.listReviewComments({
+        var _a;
+        let allReviews = [];
+        let page = 1;
+        let hasNextPage = true;
+        // Fetch all reviews with pagination
+        while (hasNextPage) {
+            const response = await this.octokit.pulls.listReviews({
                 owner: this.owner,
                 repo: this.repo,
                 pull_number: prNumber,
-                review_id: review.id
+                per_page: 100,
+                page,
             });
+            allReviews.push(...response.data);
+            // Check if there's a next page
+            const linkHeader = response.headers.link;
+            hasNextPage = (_a = linkHeader === null || linkHeader === void 0 ? void 0 : linkHeader.includes('rel="next"')) !== null && _a !== void 0 ? _a : false;
+            page++;
+        }
+        // Filter to bot reviews
+        const botReviews = allReviews.filter(review => { var _a; return ((_a = review.user) === null || _a === void 0 ? void 0 : _a.login) === 'github-actions[bot]'; });
+        core.debug(`Found ${botReviews.length} bot reviews`);
+        const botReviewsWithComments = await Promise.all(botReviews.map(async (review) => {
+            var _a;
+            let allComments = [];
+            let commentPage = 1;
+            let hasNextCommentPage = true;
+            // Fetch all comments for each review with pagination
+            while (hasNextCommentPage) {
+                const commentsResponse = await this.octokit.pulls.listReviewComments({
+                    owner: this.owner,
+                    repo: this.repo,
+                    pull_number: prNumber,
+                    review_id: review.id,
+                    per_page: 100,
+                    page: commentPage,
+                });
+                allComments.push(...commentsResponse.data);
+                // Check if there's a next page of comments
+                const commentLinkHeader = commentsResponse.headers.link;
+                hasNextCommentPage = (_a = commentLinkHeader === null || commentLinkHeader === void 0 ? void 0 : commentLinkHeader.includes('rel="next"')) !== null && _a !== void 0 ? _a : false;
+                commentPage++;
+            }
+            core.debug(`Found ${allComments.length} comments for review ID ${review.id}`);
             return {
                 commit: review.commit_id,
                 summary: review.body || '',
-                lineComments: comments.map(comment => ({
+                lineComments: allComments.map(comment => ({
                     path: comment.path,
                     line: comment.line || 0,
                     comment: comment.body
@@ -1108,6 +1184,7 @@ class ReviewService {
         core.info(`Modified files length: ${modifiedFiles.length}`);
         // Get full content for each modified file
         const filesWithContent = await Promise.all(modifiedFiles.map(async (file) => {
+            console.log('Context for file:', file.path);
             const fullContent = await this.githubService.getFileContent(file.path, prDetails.head);
             return {
                 path: file.path,
@@ -44823,6 +44900,978 @@ function isPlainObject(value) {
 }
 exports["default"] = isPlainObject;
 
+
+/***/ }),
+
+/***/ 2555:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+
+Object.defineProperty(exports, "__esModule", ({
+  value: true
+}));
+Object.defineProperty(exports, "JSONRepairError", ({
+  enumerable: true,
+  get: function () {
+    return _JSONRepairError.JSONRepairError;
+  }
+}));
+Object.defineProperty(exports, "jsonrepair", ({
+  enumerable: true,
+  get: function () {
+    return _jsonrepair.jsonrepair;
+  }
+}));
+var _jsonrepair = __nccwpck_require__(8545);
+var _JSONRepairError = __nccwpck_require__(8578);
+//# sourceMappingURL=index.js.map
+
+/***/ }),
+
+/***/ 8545:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+
+Object.defineProperty(exports, "__esModule", ({
+  value: true
+}));
+exports.jsonrepair = jsonrepair;
+var _JSONRepairError = __nccwpck_require__(8578);
+var _stringUtils = __nccwpck_require__(5119);
+const controlCharacters = {
+  '\b': '\\b',
+  '\f': '\\f',
+  '\n': '\\n',
+  '\r': '\\r',
+  '\t': '\\t'
+};
+
+// map with all escape characters
+const escapeCharacters = {
+  '"': '"',
+  '\\': '\\',
+  '/': '/',
+  b: '\b',
+  f: '\f',
+  n: '\n',
+  r: '\r',
+  t: '\t'
+  // note that \u is handled separately in parseString()
+};
+
+/**
+ * Repair a string containing an invalid JSON document.
+ * For example changes JavaScript notation into JSON notation.
+ *
+ * Example:
+ *
+ *     try {
+ *       const json = "{name: 'John'}"
+ *       const repaired = jsonrepair(json)
+ *       console.log(repaired)
+ *       // '{"name": "John"}'
+ *     } catch (err) {
+ *       console.error(err)
+ *     }
+ *
+ */
+function jsonrepair(text) {
+  let i = 0; // current index in text
+  let output = ''; // generated output
+
+  parseMarkdownCodeBlock();
+  const processed = parseValue();
+  if (!processed) {
+    throwUnexpectedEnd();
+  }
+  parseMarkdownCodeBlock();
+  const processedComma = parseCharacter(',');
+  if (processedComma) {
+    parseWhitespaceAndSkipComments();
+  }
+  if ((0, _stringUtils.isStartOfValue)(text[i]) && (0, _stringUtils.endsWithCommaOrNewline)(output)) {
+    // start of a new value after end of the root level object: looks like
+    // newline delimited JSON -> turn into a root level array
+    if (!processedComma) {
+      // repair missing comma
+      output = (0, _stringUtils.insertBeforeLastWhitespace)(output, ',');
+    }
+    parseNewlineDelimitedJSON();
+  } else if (processedComma) {
+    // repair: remove trailing comma
+    output = (0, _stringUtils.stripLastOccurrence)(output, ',');
+  }
+
+  // repair redundant end quotes
+  while (text[i] === '}' || text[i] === ']') {
+    i++;
+    parseWhitespaceAndSkipComments();
+  }
+  if (i >= text.length) {
+    // reached the end of the document properly
+    return output;
+  }
+  throwUnexpectedCharacter();
+  function parseValue() {
+    parseWhitespaceAndSkipComments();
+    const processed = parseObject() || parseArray() || parseString() || parseNumber() || parseKeywords() || parseUnquotedString(false) || parseRegex();
+    parseWhitespaceAndSkipComments();
+    return processed;
+  }
+  function parseWhitespaceAndSkipComments() {
+    let skipNewline = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : true;
+    const start = i;
+    let changed = parseWhitespace(skipNewline);
+    do {
+      changed = parseComment();
+      if (changed) {
+        changed = parseWhitespace(skipNewline);
+      }
+    } while (changed);
+    return i > start;
+  }
+  function parseWhitespace(skipNewline) {
+    const _isWhiteSpace = skipNewline ? _stringUtils.isWhitespace : _stringUtils.isWhitespaceExceptNewline;
+    let whitespace = '';
+    while (true) {
+      if (_isWhiteSpace(text, i)) {
+        whitespace += text[i];
+        i++;
+      } else if ((0, _stringUtils.isSpecialWhitespace)(text, i)) {
+        // repair special whitespace
+        whitespace += ' ';
+        i++;
+      } else {
+        break;
+      }
+    }
+    if (whitespace.length > 0) {
+      output += whitespace;
+      return true;
+    }
+    return false;
+  }
+  function parseComment() {
+    // find a block comment '/* ... */'
+    if (text[i] === '/' && text[i + 1] === '*') {
+      // repair block comment by skipping it
+      while (i < text.length && !atEndOfBlockComment(text, i)) {
+        i++;
+      }
+      i += 2;
+      return true;
+    }
+
+    // find a line comment '// ...'
+    if (text[i] === '/' && text[i + 1] === '/') {
+      // repair line comment by skipping it
+      while (i < text.length && text[i] !== '\n') {
+        i++;
+      }
+      return true;
+    }
+    return false;
+  }
+  function parseMarkdownCodeBlock() {
+    // find and skip over a Markdown fenced code block:
+    //     ``` ... ```
+    // or
+    //     ```json ... ```
+    if (text.slice(i, i + 3) === '```') {
+      i += 3;
+      if ((0, _stringUtils.isFunctionNameCharStart)(text[i])) {
+        // strip the optional language specifier like "json"
+        while (i < text.length && (0, _stringUtils.isFunctionNameChar)(text[i])) {
+          i++;
+        }
+      }
+      parseWhitespaceAndSkipComments();
+      return true;
+    }
+    return false;
+  }
+  function parseCharacter(char) {
+    if (text[i] === char) {
+      output += text[i];
+      i++;
+      return true;
+    }
+    return false;
+  }
+  function skipCharacter(char) {
+    if (text[i] === char) {
+      i++;
+      return true;
+    }
+    return false;
+  }
+  function skipEscapeCharacter() {
+    return skipCharacter('\\');
+  }
+
+  /**
+   * Skip ellipsis like "[1,2,3,...]" or "[1,2,3,...,9]" or "[...,7,8,9]"
+   * or a similar construct in objects.
+   */
+  function skipEllipsis() {
+    parseWhitespaceAndSkipComments();
+    if (text[i] === '.' && text[i + 1] === '.' && text[i + 2] === '.') {
+      // repair: remove the ellipsis (three dots) and optionally a comma
+      i += 3;
+      parseWhitespaceAndSkipComments();
+      skipCharacter(',');
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Parse an object like '{"key": "value"}'
+   */
+  function parseObject() {
+    if (text[i] === '{') {
+      output += '{';
+      i++;
+      parseWhitespaceAndSkipComments();
+
+      // repair: skip leading comma like in {, message: "hi"}
+      if (skipCharacter(',')) {
+        parseWhitespaceAndSkipComments();
+      }
+      let initial = true;
+      while (i < text.length && text[i] !== '}') {
+        let processedComma;
+        if (!initial) {
+          processedComma = parseCharacter(',');
+          if (!processedComma) {
+            // repair missing comma
+            output = (0, _stringUtils.insertBeforeLastWhitespace)(output, ',');
+          }
+          parseWhitespaceAndSkipComments();
+        } else {
+          processedComma = true;
+          initial = false;
+        }
+        skipEllipsis();
+        const processedKey = parseString() || parseUnquotedString(true);
+        if (!processedKey) {
+          if (text[i] === '}' || text[i] === '{' || text[i] === ']' || text[i] === '[' || text[i] === undefined) {
+            // repair trailing comma
+            output = (0, _stringUtils.stripLastOccurrence)(output, ',');
+          } else {
+            throwObjectKeyExpected();
+          }
+          break;
+        }
+        parseWhitespaceAndSkipComments();
+        const processedColon = parseCharacter(':');
+        const truncatedText = i >= text.length;
+        if (!processedColon) {
+          if ((0, _stringUtils.isStartOfValue)(text[i]) || truncatedText) {
+            // repair missing colon
+            output = (0, _stringUtils.insertBeforeLastWhitespace)(output, ':');
+          } else {
+            throwColonExpected();
+          }
+        }
+        const processedValue = parseValue();
+        if (!processedValue) {
+          if (processedColon || truncatedText) {
+            // repair missing object value
+            output += 'null';
+          } else {
+            throwColonExpected();
+          }
+        }
+      }
+      if (text[i] === '}') {
+        output += '}';
+        i++;
+      } else {
+        // repair missing end bracket
+        output = (0, _stringUtils.insertBeforeLastWhitespace)(output, '}');
+      }
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Parse an array like '["item1", "item2", ...]'
+   */
+  function parseArray() {
+    if (text[i] === '[') {
+      output += '[';
+      i++;
+      parseWhitespaceAndSkipComments();
+
+      // repair: skip leading comma like in [,1,2,3]
+      if (skipCharacter(',')) {
+        parseWhitespaceAndSkipComments();
+      }
+      let initial = true;
+      while (i < text.length && text[i] !== ']') {
+        if (!initial) {
+          const processedComma = parseCharacter(',');
+          if (!processedComma) {
+            // repair missing comma
+            output = (0, _stringUtils.insertBeforeLastWhitespace)(output, ',');
+          }
+        } else {
+          initial = false;
+        }
+        skipEllipsis();
+        const processedValue = parseValue();
+        if (!processedValue) {
+          // repair trailing comma
+          output = (0, _stringUtils.stripLastOccurrence)(output, ',');
+          break;
+        }
+      }
+      if (text[i] === ']') {
+        output += ']';
+        i++;
+      } else {
+        // repair missing closing array bracket
+        output = (0, _stringUtils.insertBeforeLastWhitespace)(output, ']');
+      }
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Parse and repair Newline Delimited JSON (NDJSON):
+   * multiple JSON objects separated by a newline character
+   */
+  function parseNewlineDelimitedJSON() {
+    // repair NDJSON
+    let initial = true;
+    let processedValue = true;
+    while (processedValue) {
+      if (!initial) {
+        // parse optional comma, insert when missing
+        const processedComma = parseCharacter(',');
+        if (!processedComma) {
+          // repair: add missing comma
+          output = (0, _stringUtils.insertBeforeLastWhitespace)(output, ',');
+        }
+      } else {
+        initial = false;
+      }
+      processedValue = parseValue();
+    }
+    if (!processedValue) {
+      // repair: remove trailing comma
+      output = (0, _stringUtils.stripLastOccurrence)(output, ',');
+    }
+
+    // repair: wrap the output inside array brackets
+    output = "[\n".concat(output, "\n]");
+  }
+
+  /**
+   * Parse a string enclosed by double quotes "...". Can contain escaped quotes
+   * Repair strings enclosed in single quotes or special quotes
+   * Repair an escaped string
+   *
+   * The function can run in two stages:
+   * - First, it assumes the string has a valid end quote
+   * - If it turns out that the string does not have a valid end quote followed
+   *   by a delimiter (which should be the case), the function runs again in a
+   *   more conservative way, stopping the string at the first next delimiter
+   *   and fixing the string by inserting a quote there, or stopping at a
+   *   stop index detected in the first iteration.
+   */
+  function parseString() {
+    let stopAtDelimiter = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : false;
+    let stopAtIndex = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : -1;
+    let skipEscapeChars = text[i] === '\\';
+    if (skipEscapeChars) {
+      // repair: remove the first escape character
+      i++;
+      skipEscapeChars = true;
+    }
+    if ((0, _stringUtils.isQuote)(text[i])) {
+      // double quotes are correct JSON,
+      // single quotes come from JavaScript for example, we assume it will have a correct single end quote too
+      // otherwise, we will match any double-quote-like start with a double-quote-like end,
+      // or any single-quote-like start with a single-quote-like end
+      const isEndQuote = (0, _stringUtils.isDoubleQuote)(text[i]) ? _stringUtils.isDoubleQuote : (0, _stringUtils.isSingleQuote)(text[i]) ? _stringUtils.isSingleQuote : (0, _stringUtils.isSingleQuoteLike)(text[i]) ? _stringUtils.isSingleQuoteLike : _stringUtils.isDoubleQuoteLike;
+      const iBefore = i;
+      const oBefore = output.length;
+      let str = '"';
+      i++;
+      while (true) {
+        if (i >= text.length) {
+          // end of text, we are missing an end quote
+
+          const iPrev = prevNonWhitespaceIndex(i - 1);
+          if (!stopAtDelimiter && (0, _stringUtils.isDelimiter)(text.charAt(iPrev))) {
+            // if the text ends with a delimiter, like ["hello],
+            // so the missing end quote should be inserted before this delimiter
+            // retry parsing the string, stopping at the first next delimiter
+            i = iBefore;
+            output = output.substring(0, oBefore);
+            return parseString(true);
+          }
+
+          // repair missing quote
+          str = (0, _stringUtils.insertBeforeLastWhitespace)(str, '"');
+          output += str;
+          return true;
+          // biome-ignore lint/style/noUselessElse: <explanation>
+        } else if (i === stopAtIndex) {
+          // use the stop index detected in the first iteration, and repair end quote
+          str = (0, _stringUtils.insertBeforeLastWhitespace)(str, '"');
+          output += str;
+          return true;
+          // biome-ignore lint/style/noUselessElse: <explanation>
+        } else if (isEndQuote(text[i])) {
+          // end quote
+          // let us check what is before and after the quote to verify whether this is a legit end quote
+          const iQuote = i;
+          const oQuote = str.length;
+          str += '"';
+          i++;
+          output += str;
+          parseWhitespaceAndSkipComments(false);
+          if (stopAtDelimiter || i >= text.length || (0, _stringUtils.isDelimiter)(text[i]) || (0, _stringUtils.isQuote)(text[i]) || (0, _stringUtils.isDigit)(text[i])) {
+            // The quote is followed by the end of the text, a delimiter,
+            // or a next value. So the quote is indeed the end of the string.
+            parseConcatenatedString();
+            return true;
+          }
+          const iPrevChar = prevNonWhitespaceIndex(iQuote - 1);
+          const prevChar = text.charAt(iPrevChar);
+          if (prevChar === ',') {
+            // A comma followed by a quote, like '{"a":"b,c,"d":"e"}'.
+            // We assume that the quote is a start quote, and that the end quote
+            // should have been located right before the comma but is missing.
+            i = iBefore;
+            output = output.substring(0, oBefore);
+            return parseString(false, iPrevChar);
+          }
+          if ((0, _stringUtils.isDelimiter)(prevChar)) {
+            // This is not the right end quote: it is preceded by a delimiter,
+            // and NOT followed by a delimiter. So, there is an end quote missing
+            // parse the string again and then stop at the first next delimiter
+            i = iBefore;
+            output = output.substring(0, oBefore);
+            return parseString(true);
+          }
+
+          // revert to right after the quote but before any whitespace, and continue parsing the string
+          output = output.substring(0, oBefore);
+          i = iQuote + 1;
+
+          // repair unescaped quote
+          str = "".concat(str.substring(0, oQuote), "\\").concat(str.substring(oQuote));
+        } else if (stopAtDelimiter && (0, _stringUtils.isUnquotedStringDelimiter)(text[i])) {
+          // we're in the mode to stop the string at the first delimiter
+          // because there is an end quote missing
+
+          // test start of an url like "https://..." (this would be parsed as a comment)
+          if (text[i - 1] === ':' && _stringUtils.regexUrlStart.test(text.substring(iBefore + 1, i + 2))) {
+            while (i < text.length && _stringUtils.regexUrlChar.test(text[i])) {
+              str += text[i];
+              i++;
+            }
+          }
+
+          // repair missing quote
+          str = (0, _stringUtils.insertBeforeLastWhitespace)(str, '"');
+          output += str;
+          parseConcatenatedString();
+          return true;
+        } else if (text[i] === '\\') {
+          // handle escaped content like \n or \u2605
+          const char = text.charAt(i + 1);
+          const escapeChar = escapeCharacters[char];
+          if (escapeChar !== undefined) {
+            str += text.slice(i, i + 2);
+            i += 2;
+          } else if (char === 'u') {
+            let j = 2;
+            while (j < 6 && (0, _stringUtils.isHex)(text[i + j])) {
+              j++;
+            }
+            if (j === 6) {
+              str += text.slice(i, i + 6);
+              i += 6;
+            } else if (i + j >= text.length) {
+              // repair invalid or truncated unicode char at the end of the text
+              // by removing the unicode char and ending the string here
+              i = text.length;
+            } else {
+              throwInvalidUnicodeCharacter();
+            }
+          } else {
+            // repair invalid escape character: remove it
+            str += char;
+            i += 2;
+          }
+        } else {
+          // handle regular characters
+          const char = text.charAt(i);
+          if (char === '"' && text[i - 1] !== '\\') {
+            // repair unescaped double quote
+            str += "\\".concat(char);
+            i++;
+          } else if ((0, _stringUtils.isControlCharacter)(char)) {
+            // unescaped control character
+            str += controlCharacters[char];
+            i++;
+          } else {
+            if (!(0, _stringUtils.isValidStringCharacter)(char)) {
+              throwInvalidCharacter(char);
+            }
+            str += char;
+            i++;
+          }
+        }
+        if (skipEscapeChars) {
+          // repair: skipped escape character (nothing to do)
+          skipEscapeCharacter();
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Repair concatenated strings like "hello" + "world", change this into "helloworld"
+   */
+  function parseConcatenatedString() {
+    let processed = false;
+    parseWhitespaceAndSkipComments();
+    while (text[i] === '+') {
+      processed = true;
+      i++;
+      parseWhitespaceAndSkipComments();
+
+      // repair: remove the end quote of the first string
+      output = (0, _stringUtils.stripLastOccurrence)(output, '"', true);
+      const start = output.length;
+      const parsedStr = parseString();
+      if (parsedStr) {
+        // repair: remove the start quote of the second string
+        output = (0, _stringUtils.removeAtIndex)(output, start, 1);
+      } else {
+        // repair: remove the + because it is not followed by a string
+        output = (0, _stringUtils.insertBeforeLastWhitespace)(output, '"');
+      }
+    }
+    return processed;
+  }
+
+  /**
+   * Parse a number like 2.4 or 2.4e6
+   */
+  function parseNumber() {
+    const start = i;
+    if (text[i] === '-') {
+      i++;
+      if (atEndOfNumber()) {
+        repairNumberEndingWithNumericSymbol(start);
+        return true;
+      }
+      if (!(0, _stringUtils.isDigit)(text[i])) {
+        i = start;
+        return false;
+      }
+    }
+
+    // Note that in JSON leading zeros like "00789" are not allowed.
+    // We will allow all leading zeros here though and at the end of parseNumber
+    // check against trailing zeros and repair that if needed.
+    // Leading zeros can have meaning, so we should not clear them.
+    while ((0, _stringUtils.isDigit)(text[i])) {
+      i++;
+    }
+    if (text[i] === '.') {
+      i++;
+      if (atEndOfNumber()) {
+        repairNumberEndingWithNumericSymbol(start);
+        return true;
+      }
+      if (!(0, _stringUtils.isDigit)(text[i])) {
+        i = start;
+        return false;
+      }
+      while ((0, _stringUtils.isDigit)(text[i])) {
+        i++;
+      }
+    }
+    if (text[i] === 'e' || text[i] === 'E') {
+      i++;
+      if (text[i] === '-' || text[i] === '+') {
+        i++;
+      }
+      if (atEndOfNumber()) {
+        repairNumberEndingWithNumericSymbol(start);
+        return true;
+      }
+      if (!(0, _stringUtils.isDigit)(text[i])) {
+        i = start;
+        return false;
+      }
+      while ((0, _stringUtils.isDigit)(text[i])) {
+        i++;
+      }
+    }
+
+    // if we're not at the end of the number by this point, allow this to be parsed as another type
+    if (!atEndOfNumber()) {
+      i = start;
+      return false;
+    }
+    if (i > start) {
+      // repair a number with leading zeros like "00789"
+      const num = text.slice(start, i);
+      const hasInvalidLeadingZero = /^0\d/.test(num);
+      output += hasInvalidLeadingZero ? "\"".concat(num, "\"") : num;
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Parse keywords true, false, null
+   * Repair Python keywords True, False, None
+   */
+  function parseKeywords() {
+    return parseKeyword('true', 'true') || parseKeyword('false', 'false') || parseKeyword('null', 'null') ||
+    // repair Python keywords True, False, None
+    parseKeyword('True', 'true') || parseKeyword('False', 'false') || parseKeyword('None', 'null');
+  }
+  function parseKeyword(name, value) {
+    if (text.slice(i, i + name.length) === name) {
+      output += value;
+      i += name.length;
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Repair an unquoted string by adding quotes around it
+   * Repair a MongoDB function call like NumberLong("2")
+   * Repair a JSONP function call like callback({...});
+   */
+  function parseUnquotedString(isKey) {
+    // note that the symbol can end with whitespaces: we stop at the next delimiter
+    // also, note that we allow strings to contain a slash / in order to support repairing regular expressions
+    const start = i;
+    if ((0, _stringUtils.isFunctionNameCharStart)(text[i])) {
+      while (i < text.length && (0, _stringUtils.isFunctionNameChar)(text[i])) {
+        i++;
+      }
+      let j = i;
+      while ((0, _stringUtils.isWhitespace)(text, j)) {
+        j++;
+      }
+      if (text[j] === '(') {
+        // repair a MongoDB function call like NumberLong("2")
+        // repair a JSONP function call like callback({...});
+        i = j + 1;
+        parseValue();
+        if (text[i] === ')') {
+          // repair: skip close bracket of function call
+          i++;
+          if (text[i] === ';') {
+            // repair: skip semicolon after JSONP call
+            i++;
+          }
+        }
+        return true;
+      }
+    }
+    while (i < text.length && !(0, _stringUtils.isUnquotedStringDelimiter)(text[i]) && !(0, _stringUtils.isQuote)(text[i]) && (!isKey || text[i] !== ':')) {
+      i++;
+    }
+
+    // test start of an url like "https://..." (this would be parsed as a comment)
+    if (text[i - 1] === ':' && _stringUtils.regexUrlStart.test(text.substring(start, i + 2))) {
+      while (i < text.length && _stringUtils.regexUrlChar.test(text[i])) {
+        i++;
+      }
+    }
+    if (i > start) {
+      // repair unquoted string
+      // also, repair undefined into null
+
+      // first, go back to prevent getting trailing whitespaces in the string
+      while ((0, _stringUtils.isWhitespace)(text, i - 1) && i > 0) {
+        i--;
+      }
+      const symbol = text.slice(start, i);
+      output += symbol === 'undefined' ? 'null' : JSON.stringify(symbol);
+      if (text[i] === '"') {
+        // we had a missing start quote, but now we encountered the end quote, so we can skip that one
+        i++;
+      }
+      return true;
+    }
+  }
+  function parseRegex() {
+    if (text[i] === '/') {
+      const start = i;
+      i++;
+      while (i < text.length && (text[i] !== '/' || text[i - 1] === '\\')) {
+        i++;
+      }
+      i++;
+      output += "\"".concat(text.substring(start, i), "\"");
+      return true;
+    }
+  }
+  function prevNonWhitespaceIndex(start) {
+    let prev = start;
+    while (prev > 0 && (0, _stringUtils.isWhitespace)(text, prev)) {
+      prev--;
+    }
+    return prev;
+  }
+  function atEndOfNumber() {
+    return i >= text.length || (0, _stringUtils.isDelimiter)(text[i]) || (0, _stringUtils.isWhitespace)(text, i);
+  }
+  function repairNumberEndingWithNumericSymbol(start) {
+    // repair numbers cut off at the end
+    // this will only be called when we end after a '.', '-', or 'e' and does not
+    // change the number more than it needs to make it valid JSON
+    output += "".concat(text.slice(start, i), "0");
+  }
+  function throwInvalidCharacter(char) {
+    throw new _JSONRepairError.JSONRepairError("Invalid character ".concat(JSON.stringify(char)), i);
+  }
+  function throwUnexpectedCharacter() {
+    throw new _JSONRepairError.JSONRepairError("Unexpected character ".concat(JSON.stringify(text[i])), i);
+  }
+  function throwUnexpectedEnd() {
+    throw new _JSONRepairError.JSONRepairError('Unexpected end of json string', text.length);
+  }
+  function throwObjectKeyExpected() {
+    throw new _JSONRepairError.JSONRepairError('Object key expected', i);
+  }
+  function throwColonExpected() {
+    throw new _JSONRepairError.JSONRepairError('Colon expected', i);
+  }
+  function throwInvalidUnicodeCharacter() {
+    const chars = text.slice(i, i + 6);
+    throw new _JSONRepairError.JSONRepairError("Invalid unicode character \"".concat(chars, "\""), i);
+  }
+}
+function atEndOfBlockComment(text, i) {
+  return text[i] === '*' && text[i + 1] === '/';
+}
+//# sourceMappingURL=jsonrepair.js.map
+
+/***/ }),
+
+/***/ 8578:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+
+Object.defineProperty(exports, "__esModule", ({
+  value: true
+}));
+exports.JSONRepairError = void 0;
+class JSONRepairError extends Error {
+  constructor(message, position) {
+    super("".concat(message, " at position ").concat(position));
+    this.position = position;
+  }
+}
+exports.JSONRepairError = JSONRepairError;
+//# sourceMappingURL=JSONRepairError.js.map
+
+/***/ }),
+
+/***/ 5119:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+
+Object.defineProperty(exports, "__esModule", ({
+  value: true
+}));
+exports.endsWithCommaOrNewline = endsWithCommaOrNewline;
+exports.insertBeforeLastWhitespace = insertBeforeLastWhitespace;
+exports.isControlCharacter = isControlCharacter;
+exports.isDelimiter = isDelimiter;
+exports.isDigit = isDigit;
+exports.isDoubleQuote = isDoubleQuote;
+exports.isDoubleQuoteLike = isDoubleQuoteLike;
+exports.isFunctionNameChar = isFunctionNameChar;
+exports.isFunctionNameCharStart = isFunctionNameCharStart;
+exports.isHex = isHex;
+exports.isQuote = isQuote;
+exports.isSingleQuote = isSingleQuote;
+exports.isSingleQuoteLike = isSingleQuoteLike;
+exports.isSpecialWhitespace = isSpecialWhitespace;
+exports.isStartOfValue = isStartOfValue;
+exports.isUnquotedStringDelimiter = isUnquotedStringDelimiter;
+exports.isValidStringCharacter = isValidStringCharacter;
+exports.isWhitespace = isWhitespace;
+exports.isWhitespaceExceptNewline = isWhitespaceExceptNewline;
+exports.regexUrlStart = exports.regexUrlChar = void 0;
+exports.removeAtIndex = removeAtIndex;
+exports.stripLastOccurrence = stripLastOccurrence;
+const codeSpace = 0x20; // " "
+const codeNewline = 0xa; // "\n"
+const codeTab = 0x9; // "\t"
+const codeReturn = 0xd; // "\r"
+const codeNonBreakingSpace = 0xa0;
+const codeEnQuad = 0x2000;
+const codeHairSpace = 0x200a;
+const codeNarrowNoBreakSpace = 0x202f;
+const codeMediumMathematicalSpace = 0x205f;
+const codeIdeographicSpace = 0x3000;
+function isHex(char) {
+  return /^[0-9A-Fa-f]$/.test(char);
+}
+function isDigit(char) {
+  return char >= '0' && char <= '9';
+}
+function isValidStringCharacter(char) {
+  // note that the valid range is between \u{0020} and \u{10ffff},
+  // but in JavaScript it is not possible to create a code point larger than
+  // \u{10ffff}, so there is no need to test for that here.
+  return char >= '\u0020';
+}
+function isDelimiter(char) {
+  return ',:[]/{}()\n+'.includes(char);
+}
+function isFunctionNameCharStart(char) {
+  return char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char === '_' || char === '$';
+}
+function isFunctionNameChar(char) {
+  return char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char === '_' || char === '$' || char >= '0' && char <= '9';
+}
+
+// matches "https://" and other schemas
+const regexUrlStart = exports.regexUrlStart = /^(http|https|ftp|mailto|file|data|irc):\/\/$/;
+
+// matches all valid URL characters EXCEPT "[", "]", and ",", since that are important JSON delimiters
+const regexUrlChar = exports.regexUrlChar = /^[A-Za-z0-9-._~:/?#@!$&'()*+;=]$/;
+function isUnquotedStringDelimiter(char) {
+  return ',[]/{}\n+'.includes(char);
+}
+function isStartOfValue(char) {
+  return isQuote(char) || regexStartOfValue.test(char);
+}
+
+// alpha, number, minus, or opening bracket or brace
+const regexStartOfValue = /^[[{\w-]$/;
+function isControlCharacter(char) {
+  return char === '\n' || char === '\r' || char === '\t' || char === '\b' || char === '\f';
+}
+/**
+ * Check if the given character is a whitespace character like space, tab, or
+ * newline
+ */
+function isWhitespace(text, index) {
+  const code = text.charCodeAt(index);
+  return code === codeSpace || code === codeNewline || code === codeTab || code === codeReturn;
+}
+
+/**
+ * Check if the given character is a whitespace character like space or tab,
+ * but NOT a newline
+ */
+function isWhitespaceExceptNewline(text, index) {
+  const code = text.charCodeAt(index);
+  return code === codeSpace || code === codeTab || code === codeReturn;
+}
+
+/**
+ * Check if the given character is a special whitespace character, some
+ * unicode variant
+ */
+function isSpecialWhitespace(text, index) {
+  const code = text.charCodeAt(index);
+  return code === codeNonBreakingSpace || code >= codeEnQuad && code <= codeHairSpace || code === codeNarrowNoBreakSpace || code === codeMediumMathematicalSpace || code === codeIdeographicSpace;
+}
+
+/**
+ * Test whether the given character is a quote or double quote character.
+ * Also tests for special variants of quotes.
+ */
+function isQuote(char) {
+  // the first check double quotes, since that occurs most often
+  return isDoubleQuoteLike(char) || isSingleQuoteLike(char);
+}
+
+/**
+ * Test whether the given character is a double quote character.
+ * Also tests for special variants of double quotes.
+ */
+function isDoubleQuoteLike(char) {
+  return char === '"' || char === '\u201c' || char === '\u201d';
+}
+
+/**
+ * Test whether the given character is a double quote character.
+ * Does NOT test for special variants of double quotes.
+ */
+function isDoubleQuote(char) {
+  return char === '"';
+}
+
+/**
+ * Test whether the given character is a single quote character.
+ * Also tests for special variants of single quotes.
+ */
+function isSingleQuoteLike(char) {
+  return char === "'" || char === '\u2018' || char === '\u2019' || char === '\u0060' || char === '\u00b4';
+}
+
+/**
+ * Test whether the given character is a single quote character.
+ * Does NOT test for special variants of single quotes.
+ */
+function isSingleQuote(char) {
+  return char === "'";
+}
+
+/**
+ * Strip last occurrence of textToStrip from text
+ */
+function stripLastOccurrence(text, textToStrip) {
+  let stripRemainingText = arguments.length > 2 && arguments[2] !== undefined ? arguments[2] : false;
+  const index = text.lastIndexOf(textToStrip);
+  return index !== -1 ? text.substring(0, index) + (stripRemainingText ? '' : text.substring(index + 1)) : text;
+}
+function insertBeforeLastWhitespace(text, textToInsert) {
+  let index = text.length;
+  if (!isWhitespace(text, index - 1)) {
+    // no trailing whitespaces
+    return text + textToInsert;
+  }
+  while (isWhitespace(text, index - 1)) {
+    index--;
+  }
+  return text.substring(0, index) + textToInsert + text.substring(index);
+}
+function removeAtIndex(text, start, count) {
+  return text.substring(0, start) + text.substring(start + count);
+}
+
+/**
+ * Test whether a string ends with a newline or comma character and optional whitespace
+ */
+function endsWithCommaOrNewline(text) {
+  return /[,\n][ \t\r]*$/.test(text);
+}
+//# sourceMappingURL=stringUtils.js.map
 
 /***/ }),
 
