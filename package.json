@@ -23,6 +23,7 @@
     "@google/generative-ai": "^0.21.0",
     "@octokit/rest": "^20.0.2",
     "dotenv": "^16.4.7",
+    "jsonrepair": "^3.12.0",
     "minimatch": "^9.0.3",
     "openai": "^4.28.0",
     "parse-diff": "^0.11.1"
