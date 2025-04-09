@@ -34,6 +34,6 @@ jobs:
           AI_API_KEY: ${{ secrets.GOOGLE_AI_KEY }}
           AI_MODEL: "gemini-2.5-pro-exp-03-25"
           AI_TEMPERATURE: 0.3 # 0 to 1 - higher values = more creativity and variance
-          REVIEW_MAX_COMMENTS: 5 # Optional: defaults to 10
+          MAX_COMMENTS: 5 # Optional: defaults to 10
           APPROVE_REVIEWS: false # Optional: defaults to false
-          exclude: "yarn.lock,dist/**"
+          EXCLUDE_PATTERNS: "yarn.lock,dist/**"
