@@ -192,7 +192,7 @@ By default, the model only sees the PR diff plus whatever you pin via `CONTEXT_F
 
 Set `AGENTIC_REVIEW: true` (or `agentic_review: true` in `.github/ai-review.yml`) and the model gets two tools:
 
-- **`read_file(path, reason)`** — fetches any file from the PR head. Path-safety enforced (no `..`, no leading `/`, `EXCLUDE_PATTERNS` honored). Per-session caps prevent runaway: max 20 files, max 200 KB per file (truncated above), max 8 model turns.
+- **`read_file(path, reason, [start_line], [end_line])`** — fetches a file (or a slice of one) from the PR head. Output is line-numbered (`<n>: <text>`) so the model can cite exact line numbers in its review comments. Optional 1-based inclusive `start_line` / `end_line` lets the model peek at a specific function or block instead of pulling the whole file — saves tokens and stretches the per-session budget. Path-safety enforced (no `..`, no leading `/`, `EXCLUDE_PATTERNS` honored). Per-session caps: max 20 distinct (path, range) reads, max 200 KB returned per read (truncated above), max 8 model turns. Dedup is by `(path, range)` — different ranges of the same file are independent reads.
 - **`submit_review(...)`** — single terminator. The model calls it once with the full review and the loop ends. The arguments use the same schema as the JSON response in single-shot mode, so the structured-output guarantee is the same.
 
 The token-usage step summary lists every file the model fetched and how many turns the session took, so cost is observable.

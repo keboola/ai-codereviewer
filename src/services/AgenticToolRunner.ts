@@ -19,7 +19,13 @@ export interface AgenticEnv {
   ref: string;
   excludePatterns: string[];
   limits: AgenticLimits;
+  /** Map of "path[:start:end]" → bytes returned. Used for dedup and budget. */
   filesRead: Map<string, number>;
+}
+
+export interface ReadFileArgs {
+  startLine?: number;
+  endLine?: number;
 }
 
 export function makeAgenticEnv(opts: {
@@ -38,17 +44,28 @@ export function makeAgenticEnv(opts: {
 }
 
 /**
- * Execute the read_file tool. Returns either the file contents or a
- * short error message that the model can act on. Never throws.
+ * Execute the read_file tool. Returns either the (line-numbered) file
+ * contents or a short error message that the model can act on. Never
+ * throws.
  *
- * Path safety: rejects absolute paths, parent traversal (`..`),
- * empty paths, and anything matching EXCLUDE_PATTERNS. Caps total
- * file count and per-file size from `limits`.
+ * Behavior:
+ *   - Path safety: rejects absolute paths, parent traversal (`..`),
+ *     empty paths, and anything matching EXCLUDE_PATTERNS.
+ *   - Optional start_line / end_line slices the file. Both 1-based
+ *     and inclusive. end_line is clamped to file length. start_line
+ *     defaults to 1, end_line defaults to last line.
+ *   - Output is line-numbered (`<n>: <text>`) so the model can cite
+ *     accurate review-comment line numbers without arithmetic.
+ *   - Dedup key is "path:start:end" — reading lines 1-100 does NOT
+ *     block a follow-up read of lines 101-200 of the same file.
+ *   - Budget is by RETURNED bytes (after slicing/truncation), so a
+ *     small slice of a huge file barely spends from the per-file cap.
  */
 export async function executeReadFile(
   env: AgenticEnv,
   path: string,
-  reason: string
+  reason: string,
+  args: ReadFileArgs = {}
 ): Promise<string> {
   if (!path || typeof path !== 'string') {
     return 'error: read_file requires a non-empty "path" argument';
@@ -58,31 +75,70 @@ export async function executeReadFile(
   if (cleanPath.startsWith('/') || cleanPath.includes('..')) {
     return `error: invalid path '${cleanPath}' — must be a repo-relative path without leading "/" or ".."`;
   }
-  if (env.filesRead.has(cleanPath)) {
-    const prevSize = env.filesRead.get(cleanPath)!;
-    return `error: '${cleanPath}' was already read in this session (${prevSize} bytes); reuse the previous result instead of re-reading`;
-  }
   if (env.excludePatterns.some(p => minimatch(cleanPath, p, { matchBase: true, dot: true }))) {
     return `error: '${cleanPath}' matches EXCLUDE_PATTERNS — not readable in this session`;
   }
+
+  // Validate range args before checking budget — bad args shouldn't consume a slot.
+  let start = args.startLine;
+  let end = args.endLine;
+  if (start !== undefined && (!Number.isInteger(start) || start < 1)) {
+    return `error: start_line must be an integer >= 1; got ${start}`;
+  }
+  if (end !== undefined && (!Number.isInteger(end) || end < 1)) {
+    return `error: end_line must be an integer >= 1; got ${end}`;
+  }
+  if (start !== undefined && end !== undefined && end < start) {
+    return `error: end_line (${end}) must be >= start_line (${start})`;
+  }
+
+  const dedupKey = rangeKey(cleanPath, start, end);
+  if (env.filesRead.has(dedupKey)) {
+    const prevSize = env.filesRead.get(dedupKey)!;
+    return `error: '${dedupKey}' was already read in this session (${prevSize} bytes); reuse the previous result instead of re-reading`;
+  }
   if (env.filesRead.size >= env.limits.maxFiles) {
-    return `error: read budget exhausted — already read ${env.filesRead.size} files (limit ${env.limits.maxFiles}). Submit your review now.`;
+    return `error: read budget exhausted — already read ${env.filesRead.size} files/slices (limit ${env.limits.maxFiles}). Submit your review now.`;
   }
 
   const content = await env.github.getFileContent(cleanPath, env.ref, { quiet: true });
   if (!content) {
-    env.filesRead.set(cleanPath, 0);
+    env.filesRead.set(dedupKey, 0);
     return `error: '${cleanPath}' not found at PR head`;
   }
 
-  const cap = env.limits.maxBytesPerFile;
-  if (content.length > cap) {
-    env.filesRead.set(cleanPath, cap);
-    core.info(`[agentic] read_file ${cleanPath} (${content.length} bytes, truncated to ${cap}) — ${reason}`);
-    return `[truncated to ${cap} of ${content.length} bytes]\n${content.slice(0, cap)}`;
+  // Slice by lines (or take the whole file when no range was requested).
+  const allLines = content.split('\n');
+  const total = allLines.length;
+  const startIdx = (start ?? 1) - 1;
+  const endIdx = end !== undefined ? Math.min(end, total) : total;
+  const slice = allLines.slice(startIdx, endIdx);
+
+  if (slice.length === 0) {
+    env.filesRead.set(dedupKey, 0);
+    return `error: '${cleanPath}' has ${total} lines; requested range ${start ?? 1}-${end ?? total} is empty`;
   }
 
-  env.filesRead.set(cleanPath, content.length);
-  core.info(`[agentic] read_file ${cleanPath} (${content.length} bytes) — ${reason}`);
-  return content;
+  // Line-number the output so the model cites real lines in comments.
+  const padTo = String(startIdx + slice.length).length;
+  const numbered = slice
+    .map((line, i) => `${String(startIdx + 1 + i).padStart(padTo, ' ')}: ${line}`)
+    .join('\n');
+
+  const cap = env.limits.maxBytesPerFile;
+  if (numbered.length > cap) {
+    const out = `[truncated to ${cap} of ${numbered.length} bytes]\n${numbered.slice(0, cap)}`;
+    env.filesRead.set(dedupKey, cap);
+    core.info(`[agentic] read_file ${dedupKey} (${numbered.length} bytes, truncated to ${cap}) — ${reason}`);
+    return out;
+  }
+
+  env.filesRead.set(dedupKey, numbered.length);
+  core.info(`[agentic] read_file ${dedupKey} (${numbered.length} bytes) — ${reason}`);
+  return numbered;
+}
+
+function rangeKey(path: string, start?: number, end?: number): string {
+  if (start === undefined && end === undefined) return path;
+  return `${path}:${start ?? 1}:${end ?? 'end'}`;
 }

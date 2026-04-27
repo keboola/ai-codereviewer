@@ -109,8 +109,12 @@ export class AnthropicProvider implements AIProvider {
       messages.push({ role: 'assistant', content: response.content });
       const toolResults: Anthropic.ToolResultBlockParam[] = await Promise.all(
         reads.map(async (b: any) => {
-          const input = (b.input ?? {}) as { path?: string; reason?: string };
-          const content = await request.tools!.readFile(input.path ?? '', input.reason ?? '');
+          const input = (b.input ?? {}) as { path?: string; reason?: string; start_line?: number; end_line?: number };
+          const content = await request.tools!.readFile(
+            input.path ?? '',
+            input.reason ?? '',
+            { startLine: input.start_line, endLine: input.end_line },
+          );
           return {
             type: 'tool_result' as const,
             tool_use_id: b.id,

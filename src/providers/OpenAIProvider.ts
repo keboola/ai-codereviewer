@@ -92,9 +92,13 @@ export class OpenAIProvider implements AIProvider {
       messages.push(message);
       for (const read of reads) {
         if (read.type !== 'function') continue;
-        let args: { path?: string; reason?: string } = {};
+        let args: { path?: string; reason?: string; start_line?: number; end_line?: number } = {};
         try { args = JSON.parse(read.function.arguments); } catch { /* keep empty */ }
-        const content = await request.tools!.readFile(args.path ?? '', args.reason ?? '');
+        const content = await request.tools!.readFile(
+          args.path ?? '',
+          args.reason ?? '',
+          { startLine: args.start_line, endLine: args.end_line },
+        );
         messages.push({ role: 'tool', tool_call_id: read.id, content });
       }
     }

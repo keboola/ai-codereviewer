@@ -119,7 +119,11 @@ export class GeminiProvider implements AIProvider {
       const responses = await Promise.all(
         reads.map(async (c: any) => {
           const args = c.args ?? {};
-          const content = await request.tools!.readFile(args.path ?? '', args.reason ?? '');
+          const content = await request.tools!.readFile(
+            args.path ?? '',
+            args.reason ?? '',
+            { startLine: args.start_line, endLine: args.end_line },
+          );
           return { name: 'read_file', response: { content } };
         })
       );

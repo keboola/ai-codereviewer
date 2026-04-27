@@ -125,7 +125,7 @@ describe('AnthropicProvider', () => {
       const result = await provider.review(request);
 
       expect(messagesCreate).toHaveBeenCalledTimes(2);
-      expect(readFile).toHaveBeenCalledWith('src/utils/foo.ts', 'need it');
+      expect(readFile).toHaveBeenCalledWith('src/utils/foo.ts', 'need it', { startLine: undefined, endLine: undefined });
       expect(result.summary).toBe('looks good');
       expect(result.suggestedAction).toBe('comment');
       expect(result.confidence).toBe(80);

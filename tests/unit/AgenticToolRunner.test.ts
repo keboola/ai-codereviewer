@@ -8,15 +8,15 @@ function fakeGithub(map: Record<string, string>): GitHubService {
 }
 
 describe('executeReadFile', () => {
-  it('reads a regular file and tracks it in the dedup cache', async () => {
+  it('reads a regular file and returns line-numbered output', async () => {
     const env = makeAgenticEnv({
-      github: fakeGithub({ 'src/a.ts': 'hello' }),
+      github: fakeGithub({ 'src/a.ts': 'foo\nbar\nbaz' }),
       ref: 'h',
       excludePatterns: [],
     });
     const out = await executeReadFile(env, 'src/a.ts', 'inspect');
-    expect(out).toBe('hello');
-    expect(env.filesRead.get('src/a.ts')).toBe(5);
+    expect(out).toBe('1: foo\n2: bar\n3: baz');
+    expect(env.filesRead.get('src/a.ts')).toBe(out.length);
   });
 
   it('rejects parent-traversal paths', async () => {
@@ -37,7 +37,7 @@ describe('executeReadFile', () => {
     expect(out).toMatch(/non-empty/);
   });
 
-  it('refuses to re-read the same file', async () => {
+  it('refuses to re-read the same whole file', async () => {
     const env = makeAgenticEnv({
       github: fakeGithub({ 'a.ts': 'x' }),
       ref: 'h',
@@ -64,8 +64,8 @@ describe('executeReadFile', () => {
     expect(out).toMatch(/not found/);
   });
 
-  it('truncates large files to maxBytesPerFile', async () => {
-    const big = 'x'.repeat(500);
+  it('truncates very large output to maxBytesPerFile', async () => {
+    const big = Array.from({ length: 50 }, (_, i) => `line ${i + 1} of payload here`).join('\n');
     const env = makeAgenticEnv({
       github: fakeGithub({ 'big.ts': big }),
       ref: 'h',
@@ -73,7 +73,7 @@ describe('executeReadFile', () => {
       limits: { maxBytesPerFile: 100 },
     });
     const out = await executeReadFile(env, 'big.ts', 'why');
-    expect(out).toMatch(/truncated to 100 of 500/);
+    expect(out).toMatch(/^\[truncated to 100 of \d+ bytes\]/);
     expect(env.filesRead.get('big.ts')).toBe(100);
   });
 
@@ -84,9 +84,93 @@ describe('executeReadFile', () => {
       excludePatterns: [],
       limits: { maxFiles: 2 },
     });
-    expect(await executeReadFile(env, 'a.ts', 'r')).toBe('x');
-    expect(await executeReadFile(env, 'b.ts', 'r')).toBe('y');
+    await executeReadFile(env, 'a.ts', 'r');
+    await executeReadFile(env, 'b.ts', 'r');
     const out = await executeReadFile(env, 'c.ts', 'r');
     expect(out).toMatch(/budget exhausted/);
+  });
+
+  describe('line ranges', () => {
+    const sample = 'one\ntwo\nthree\nfour\nfive\nsix';
+
+    it('returns just the requested line range, line-numbered', async () => {
+      const env = makeAgenticEnv({
+        github: fakeGithub({ 'a.ts': sample }),
+        ref: 'h',
+        excludePatterns: [],
+      });
+      const out = await executeReadFile(env, 'a.ts', 'r', { startLine: 2, endLine: 4 });
+      expect(out).toBe('2: two\n3: three\n4: four');
+    });
+
+    it('start_line alone reads from that line to end', async () => {
+      const env = makeAgenticEnv({
+        github: fakeGithub({ 'a.ts': sample }),
+        ref: 'h',
+        excludePatterns: [],
+      });
+      const out = await executeReadFile(env, 'a.ts', 'r', { startLine: 5 });
+      expect(out).toBe('5: five\n6: six');
+    });
+
+    it('end_line alone reads from line 1 to that line', async () => {
+      const env = makeAgenticEnv({
+        github: fakeGithub({ 'a.ts': sample }),
+        ref: 'h',
+        excludePatterns: [],
+      });
+      const out = await executeReadFile(env, 'a.ts', 'r', { endLine: 2 });
+      expect(out).toBe('1: one\n2: two');
+    });
+
+    it('end_line larger than file length is clamped, not an error', async () => {
+      const env = makeAgenticEnv({
+        github: fakeGithub({ 'a.ts': 'one\ntwo' }),
+        ref: 'h',
+        excludePatterns: [],
+      });
+      const out = await executeReadFile(env, 'a.ts', 'r', { startLine: 1, endLine: 999 });
+      expect(out).toBe('1: one\n2: two');
+    });
+
+    it('rejects end_line < start_line', async () => {
+      const env = makeAgenticEnv({
+        github: fakeGithub({ 'a.ts': sample }),
+        ref: 'h',
+        excludePatterns: [],
+      });
+      const out = await executeReadFile(env, 'a.ts', 'r', { startLine: 5, endLine: 2 });
+      expect(out).toMatch(/end_line.*must be >=.*start_line/);
+    });
+
+    it('rejects start_line < 1', async () => {
+      const env = makeAgenticEnv({ github: fakeGithub({ 'a.ts': sample }), ref: 'h', excludePatterns: [] });
+      const out = await executeReadFile(env, 'a.ts', 'r', { startLine: 0 });
+      expect(out).toMatch(/start_line must be an integer >= 1/);
+    });
+
+    it('dedup is per (path, range) — different ranges of the same file are allowed', async () => {
+      const env = makeAgenticEnv({
+        github: fakeGithub({ 'a.ts': sample }),
+        ref: 'h',
+        excludePatterns: [],
+      });
+      const a = await executeReadFile(env, 'a.ts', 'r', { startLine: 1, endLine: 3 });
+      const b = await executeReadFile(env, 'a.ts', 'r', { startLine: 4, endLine: 6 });
+      expect(a).toMatch(/^1: one/);
+      expect(b).toMatch(/^4: four/);
+      expect(env.filesRead.size).toBe(2);
+    });
+
+    it('refuses re-reading the SAME range', async () => {
+      const env = makeAgenticEnv({
+        github: fakeGithub({ 'a.ts': sample }),
+        ref: 'h',
+        excludePatterns: [],
+      });
+      await executeReadFile(env, 'a.ts', 'r', { startLine: 1, endLine: 3 });
+      const second = await executeReadFile(env, 'a.ts', 'r', { startLine: 1, endLine: 3 });
+      expect(second).toMatch(/already read/);
+    });
   });
 });
