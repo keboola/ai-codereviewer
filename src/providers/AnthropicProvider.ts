@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { AIProvider, AIProviderConfig, ReviewRequest, ReviewResponse } from './AIProvider';
 import * as core from '@actions/core';
-import { buildSystemPrompt } from '../prompts';
+import { buildSystemPrompt, buildUserPayload } from '../prompts';
 import { TextBlock } from '@anthropic-ai/sdk/resources';
 
 export class AnthropicProvider implements AIProvider {
@@ -37,7 +37,7 @@ export class AnthropicProvider implements AIProvider {
       messages: [
         {
           role: 'user',
-          content: `${this.buildPullRequestPrompt(request)}\n\nReturn the response in JSON format only, no other text or comments.`,
+          content: `${buildUserPayload(request)}\n\nReturn the response in JSON format only, no other text or comments.`,
         },
       ],
       temperature: this.config.temperature ?? 0.3,
@@ -84,23 +84,6 @@ export class AnthropicProvider implements AIProvider {
       cachedInputTokens: u.cache_read_input_tokens,
       totalTokens: inputTokens + (u.output_tokens ?? 0),
     };
-  }
-
-  private buildPullRequestPrompt(request: ReviewRequest): string {
-    return JSON.stringify({
-      type: 'code_review',
-      files: request.files,
-      pr: request.pullRequest,
-      context: request.context,
-      previousReviews: request.previousReviews?.map(review => ({
-        summary: review.summary,
-        lineComments: review.lineComments.map(comment => ({
-          path: comment.path,
-          line: comment.line,
-          comment: comment.comment
-        }))
-      }))
-    });
   }
 
   private parseResponse(response: Anthropic.Message): ReviewResponse {
