@@ -128,6 +128,7 @@ Regardless of mode, applying the `ai-review` label to any PR always triggers a f
 | `CONTEXT_FILES` | Comma-separated list of files (paths from repo root) fetched and shown to the model alongside the diff. Empty by default — set per consumer or via `.github/ai-review.yml` `context_files`. | `""` |
 | `EXCLUDE_PATTERNS` | Files to exclude (glob patterns, comma-separated) | `"**/*.lock,**/*.json,**/*.md"` |
 | `CONFIG_FILE` | Path (in the PR head) to a YAML file whose top-level keys override action inputs for this repo. See "Per-repo overrides" below. | `.github/ai-review.yml` |
+| `AGENTIC_REVIEW` | When `true`, the model can call `read_file(path)` during review to fetch any file from the PR head — useful for large repos where the diff alone isn't enough context. Costs more (multi-turn). See "Agentic review" below. | `false` |
 
 ### Per-repository reviewer instructions
 
@@ -176,6 +177,7 @@ context_files:                       # files attached to every review (default: 
   - tsconfig.json
 # context_files: "package.json,tsconfig.json"   # comma-separated string also accepted
 # context_files: []                              # explicit opt-out (override a non-empty CONTEXT_FILES baseline)
+agentic_review: true                 # let the model fetch any file via read_file (default: false)
 ```
 
 **Layering.** Action inputs (set in the central workflow) are the **baseline**. Anything set in this file **overrides** the baseline for this repo. Anything not in the file falls through to the action input value. Sensitive / org-level inputs (API keys, `AI_BASE_URL`, `INSTRUCTIONS_URL`, `INSTRUCTIONS_URL_TOKEN`) are intentionally **not** overridable from this file — they stay in workflow inputs / secrets.
@@ -183,6 +185,36 @@ context_files:                       # files attached to every review (default: 
 **Where the file is fetched from.** From the **PR head**, so each PR exercises the version on its own branch. Same security model as `INSTRUCTIONS_FILE` — see the fork-PR note in that section.
 
 **Bad values are warned and ignored**, never fail the action. e.g. `min_comment_severity: criticla` (typo) logs a warning and the action falls back to the baseline.
+
+### Agentic review (model can read files on demand)
+
+By default, the model only sees the PR diff plus whatever you pin via `CONTEXT_FILES`. In a large repo this often isn't enough — a 20-line change to `useAuth.ts` may rely on `auth/types.ts`, `useSession.ts`, and the relevant test fixture, none of which are in the diff.
+
+Set `AGENTIC_REVIEW: true` (or `agentic_review: true` in `.github/ai-review.yml`) and the model gets two tools:
+
+- **`read_file(path, reason)`** — fetches any file from the PR head. Path-safety enforced (no `..`, no leading `/`, `EXCLUDE_PATTERNS` honored). Per-session caps prevent runaway: max 20 files, max 200 KB per file (truncated above), max 8 model turns.
+- **`submit_review(...)`** — single terminator. The model calls it once with the full review and the loop ends. The arguments use the same schema as the JSON response in single-shot mode, so the structured-output guarantee is the same.
+
+The token-usage step summary lists every file the model fetched and how many turns the session took, so cost is observable.
+
+```yaml
+# Central workflow — turn it on for everyone:
+- uses: keboola/ai-code-reviewer@main
+  with:
+    AGENTIC_REVIEW: true
+    # ... other inputs
+```
+
+Or per-repo:
+
+```yaml
+# .github/ai-review.yml
+agentic_review: true
+```
+
+**Cost trade-off.** Each turn is a full round-trip with the model; with 3–5 reads typical and 8 max turns, you're paying ~2–6× the tokens of a single-shot review. With Anthropic prompt caching (enabled by default) the system block is read at ~10% on every turn after the first, so the marginal cost of additional turns is small. With OpenAI's automatic prefix caching the savings are similar but only kick in if the prefix is unchanged. Gemini has no caching today — every turn pays full freight.
+
+**When NOT to use it.** Tiny repos. Tightly scoped diffs (one-file fixes). Cost-sensitive contexts where you'd rather pay $0.01 less per review than catch a missed-context bug. Start with it off, watch where the bot is wrong, decide.
 
 ### Sharing reviewer instructions across many repos
 

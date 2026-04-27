@@ -21,6 +21,7 @@ export interface RepoConfig {
   project_context_file?: string;
   /** Normalized to string[]; YAML may use either a list or a comma-separated string. Empty array opts out of context files entirely. */
   context_files?: string[];
+  agentic_review?: boolean;
 }
 
 const VALID_SEVERITIES = new Set<CommentSeverity>(['blocker', 'major', 'minor', 'nit']);
@@ -92,6 +93,9 @@ export async function loadRepoConfig(
       .filter(Boolean);
   } else if (raw.context_files !== undefined) {
     core.warning(`${path}: ignoring context_files (must be a list of strings or a comma-separated string)`);
+  }
+  if (typeof raw.agentic_review === 'boolean') {
+    cfg.agentic_review = raw.agentic_review;
   }
 
   const overrides = Object.keys(cfg);

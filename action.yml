@@ -66,6 +66,10 @@ inputs:
     description: "Path (in the PR head) to a YAML file whose top-level keys override action inputs for this repo. Useful when the action runs from an org-level Required Workflow and individual repos need to tune knobs without editing the central workflow. Skipped silently if missing."
     required: false
     default: ".github/ai-review.yml"
+  AGENTIC_REVIEW:
+    description: "When true, the model can call read_file(path) during the review to fetch any file from the PR head — useful in large repos where the diff alone isn't enough. Adds latency and cost (multiple model turns). Default false."
+    required: false
+    default: "false"
 runs:
   using: "node24"
   main: "dist/index.js"

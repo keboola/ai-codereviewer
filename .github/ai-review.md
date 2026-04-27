@@ -16,6 +16,24 @@ addition to the generic guidance.
   - "`gpt-4o` works on GitHub Models" — *wrong*; Models requires the
     `publisher/model` form (`openai/gpt-4o`).
 
+## Use read_file aggressively
+
+This repo runs in agentic mode (`agentic_review: true`). When the diff
+references a function, type, or test fixture that isn't in the diff,
+**read it before commenting**. Comments rooted in "I assume X works
+like…" are worse than no comment.
+
+Strong reasons to call `read_file`:
+- The diff calls a helper not shown — read it to know its contract.
+- A test was added or changed — read the test to confirm it actually
+  exercises the behavior the PR claims.
+- A type or interface is referenced but not defined in the diff — read
+  the source.
+
+Weak reasons (skip):
+- "Just to get more context." Be specific about what is actually missing.
+- READMEs / docs files unless the PR changes them.
+
 ## Recognize intentional patterns
 
 - `dist/` is committed on purpose — this repo ships as a node-action,

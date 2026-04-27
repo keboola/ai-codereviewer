@@ -22,6 +22,10 @@ export class DiffService {
     this.excludePatterns = this.parsePatterns(excludePatterns);
   }
 
+  getExcludePatterns(): string[] {
+    return [...this.excludePatterns];
+  }
+
   private parsePatterns(excludePatterns: string): string[] {
     return excludePatterns
       .split(',')

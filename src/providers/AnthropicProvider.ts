@@ -1,7 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { AIProvider, AIProviderConfig, ReviewRequest, ReviewResponse } from './AIProvider';
+import { AIProvider, AIProviderConfig, ReviewRequest, ReviewResponse, UsageReport } from './AIProvider';
 import * as core from '@actions/core';
-import { buildSystemPrompt, buildUserPayload } from '../prompts';
+import { agenticTools, buildSystemPrompt, buildUserPayload, readFileTool, submitReviewTool } from '../prompts';
+import { DEFAULT_AGENTIC_LIMITS } from '../services/AgenticToolRunner';
 import { TextBlock } from '@anthropic-ai/sdk/resources';
 
 export class AnthropicProvider implements AIProvider {
@@ -18,21 +19,20 @@ export class AnthropicProvider implements AIProvider {
   async review(request: ReviewRequest): Promise<ReviewResponse> {
     core.debug(`Sending request to Anthropic with prompt structure: ${JSON.stringify(request, null, 2)}`);
 
+    if (request.context.agenticReview && request.tools) {
+      return this.reviewAgentic(request);
+    }
+    return this.reviewSingleShot(request);
+  }
+
+  private async reviewSingleShot(request: ReviewRequest): Promise<ReviewResponse> {
     const systemPrompt = buildSystemPrompt(request);
 
     const response = await this.client.messages.create({
       model: this.config.model,
       max_tokens: 8000,
-      // Pass system as a content-block array so we can attach cache_control.
-      // The base reviewer instructions are identical across every PR review,
-      // so caching the system block trades one full-input billing for ~10%
-      // on every subsequent call within the cache window.
       system: [
-        {
-          type: 'text',
-          text: systemPrompt,
-          cache_control: { type: 'ephemeral' },
-        },
+        { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
       ],
       messages: [
         {
@@ -44,32 +44,118 @@ export class AnthropicProvider implements AIProvider {
     });
 
     if (response.stop_reason === 'max_tokens') {
-      core.warning(
-        'Anthropic response was truncated (stop_reason=max_tokens). Some line comments may have been lost — consider raising max_tokens or trimming context.'
-      );
+      core.warning('Anthropic response was truncated (stop_reason=max_tokens).');
     }
 
     const firstBlock = response.content[0];
     if (!firstBlock || firstBlock.type !== 'text') {
       core.error(`Anthropic returned a non-text first content block (type=${firstBlock?.type ?? 'undefined'})`);
-      return {
-        summary: 'Anthropic returned a non-text response',
-        lineComments: [],
-        suggestedAction: 'COMMENT',
-        confidence: 0,
-      };
+      return this.fallback('Anthropic returned a non-text response');
     }
 
     core.debug(`Raw Anthropic response: ${JSON.stringify(firstBlock.text, null, 2)}`);
 
-    const parsedResponse = this.parseResponse(response);
-    parsedResponse.usage = this.extractUsage(response);
-    core.info(`Parsed response: ${JSON.stringify(parsedResponse, null, 2)}`);
-
-    return parsedResponse;
+    const parsed = this.parseSingleShot(response);
+    parsed.usage = this.mergeUsage(undefined, this.extractUsage(response), 1);
+    core.info(`Parsed response: ${JSON.stringify(parsed, null, 2)}`);
+    return parsed;
   }
 
-  private extractUsage(response: Anthropic.Message) {
+  private async reviewAgentic(request: ReviewRequest): Promise<ReviewResponse> {
+    const systemPrompt = buildSystemPrompt(request);
+    const messages: Anthropic.MessageParam[] = [
+      { role: 'user', content: buildUserPayload(request) },
+    ];
+
+    let aggregateUsage: UsageReport | undefined;
+
+    for (let turn = 1; turn <= DEFAULT_AGENTIC_LIMITS.maxTurns; turn++) {
+      const response = await this.client.messages.create({
+        model: this.config.model,
+        max_tokens: 8000,
+        system: [
+          { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
+        ],
+        tools: [
+          { name: readFileTool.name, description: readFileTool.description, input_schema: readFileTool.parameters as any },
+          { name: submitReviewTool.name, description: submitReviewTool.description, input_schema: submitReviewTool.parameters as any },
+        ],
+        messages,
+        temperature: this.config.temperature ?? 0.3,
+      });
+
+      aggregateUsage = this.mergeUsage(aggregateUsage, this.extractUsage(response), turn);
+
+      if (response.stop_reason === 'max_tokens') {
+        core.warning(`Anthropic turn ${turn} truncated (stop_reason=max_tokens).`);
+      }
+
+      const toolUses = response.content.filter((b: any) => b.type === 'tool_use');
+
+      const submit = toolUses.find((b: any) => b.name === 'submit_review');
+      if (submit) {
+        const review = this.parseSubmitInput((submit as any).input);
+        review.usage = aggregateUsage;
+        core.info(`Agentic review submitted on turn ${turn}`);
+        return review;
+      }
+
+      const reads = toolUses.filter((b: any) => b.name === 'read_file');
+      if (reads.length === 0) {
+        core.warning(`Anthropic turn ${turn} produced no tool call; ending loop`);
+        break;
+      }
+
+      messages.push({ role: 'assistant', content: response.content });
+      const toolResults: Anthropic.ToolResultBlockParam[] = await Promise.all(
+        reads.map(async (b: any) => {
+          const input = (b.input ?? {}) as { path?: string; reason?: string };
+          const content = await request.tools!.readFile(input.path ?? '', input.reason ?? '');
+          return {
+            type: 'tool_result' as const,
+            tool_use_id: b.id,
+            content,
+          };
+        })
+      );
+      messages.push({ role: 'user', content: toolResults });
+    }
+
+    core.warning(`Agentic loop hit max turns (${DEFAULT_AGENTIC_LIMITS.maxTurns}) without submit_review`);
+    const fb = this.fallback('Agentic loop did not call submit_review within budget');
+    fb.usage = aggregateUsage;
+    return fb;
+  }
+
+  private parseSingleShot(response: Anthropic.Message): ReviewResponse {
+    try {
+      const content = JSON.parse((response.content[0] as TextBlock).text);
+      return {
+        summary: content.summary,
+        lineComments: content.comments,
+        suggestedAction: content.suggestedAction,
+        confidence: content.confidence,
+      };
+    } catch (error) {
+      core.error(`Failed to parse Anthropic response: ${error}`);
+      return this.fallback('Failed to parse AI response');
+    }
+  }
+
+  private parseSubmitInput(input: any): ReviewResponse {
+    return {
+      summary: input?.summary ?? '',
+      lineComments: input?.comments ?? [],
+      suggestedAction: input?.suggestedAction ?? 'COMMENT',
+      confidence: input?.confidence ?? 0,
+    };
+  }
+
+  private fallback(summary: string): ReviewResponse {
+    return { summary, lineComments: [], suggestedAction: 'COMMENT', confidence: 0 };
+  }
+
+  private extractUsage(response: Anthropic.Message): UsageReport | undefined {
     const u = response.usage as {
       input_tokens?: number;
       output_tokens?: number;
@@ -86,23 +172,17 @@ export class AnthropicProvider implements AIProvider {
     };
   }
 
-  private parseResponse(response: Anthropic.Message): ReviewResponse {
-    try {
-      const content = JSON.parse((response.content[0] as TextBlock).text);
-      return {
-        summary: content.summary,
-        lineComments: content.comments,
-        suggestedAction: content.suggestedAction,
-        confidence: content.confidence,
-      };
-    } catch (error) {
-      core.error(`Failed to parse Anthropic response: ${error}`);
-      return {
-        summary: 'Failed to parse AI response',
-        lineComments: [],
-        suggestedAction: 'COMMENT',
-        confidence: 0,
-      };
-    }
+  private mergeUsage(prev: UsageReport | undefined, next: UsageReport | undefined, turns: number): UsageReport {
+    const sum = (a?: number, b?: number) => (a ?? 0) + (b ?? 0);
+    return {
+      inputTokens: sum(prev?.inputTokens, next?.inputTokens),
+      outputTokens: sum(prev?.outputTokens, next?.outputTokens),
+      cachedInputTokens: sum(prev?.cachedInputTokens, next?.cachedInputTokens),
+      totalTokens: sum(prev?.totalTokens, next?.totalTokens),
+      turns,
+    };
   }
 }
+
+// Tools array kept for symmetry with other providers; Anthropic uses individual entries above
+void agenticTools;
