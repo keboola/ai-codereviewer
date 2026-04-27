@@ -359,7 +359,9 @@ yarn build
 # Run unit tests
 yarn test
 
-# Package for distribution
+# Package for distribution (rebuilds dist/index.js — done automatically by
+# .github/workflows/rebuild-dist.yml on every PR; you only need to run this
+# locally if you're testing the action with `act` or similar)
 yarn package
 
 # Generate test PR payload (for e2e testing)
