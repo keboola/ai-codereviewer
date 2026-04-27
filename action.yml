@@ -63,7 +63,7 @@ inputs:
     required: false
     default: "**/*.lock,**/*.json,**/*.md"
 runs:
-  using: "node20"
+  using: "node24"
   main: "dist/index.js"
 branding:
   icon: "code"
