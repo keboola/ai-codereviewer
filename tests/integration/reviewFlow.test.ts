@@ -45,9 +45,14 @@ jest.mock('@octokit/rest', () => ({
         }
       }),
       listReviews: jest.fn().mockResolvedValue({
-        data: []
+        data: [],
+        headers: {}
       }),
       listReviewComments: jest.fn().mockResolvedValue({
+        data: [],
+        headers: {}
+      }),
+      listCommits: jest.fn().mockResolvedValue({
         data: []
       }),
     },
@@ -57,6 +62,11 @@ jest.mock('@octokit/rest', () => ({
           content: Buffer.from('test content').toString('base64'),
           encoding: 'base64'
         }
+      })
+    },
+    users: {
+      getAuthenticated: jest.fn().mockResolvedValue({
+        data: { login: 'github-actions[bot]' }
       })
     }
   }))
