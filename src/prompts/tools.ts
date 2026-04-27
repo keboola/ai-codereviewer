@@ -17,7 +17,7 @@ import { reviewResponseSchema } from './reviewSchema';
 export const readFileTool = {
   name: 'read_file',
   description:
-    'Read a file from the PR head. Use to inspect source files referenced by the diff (helpers, types, test fixtures, configs) that you need to review the change correctly. Do NOT use to fetch entire READMEs or large generated files. Each session has a budget; spend it on files that meaningfully change your review.',
+    'Read a file (or a slice of one) from the PR head. Use to inspect source files referenced by the diff (helpers, types, test fixtures, configs) that you need to review the change correctly. Prefer requesting a line range when you only need a specific function or block — it spends less of the per-session byte budget and lets you peek into more files. Output is line-numbered; cite those exact line numbers in your review comments.',
   parameters: {
     type: 'object' as const,
     additionalProperties: false,
@@ -32,6 +32,18 @@ export const readFileTool = {
         type: 'string',
         description:
           'One short sentence on why this file is necessary to review the change. Helps audit unnecessary reads.',
+      },
+      start_line: {
+        type: 'integer',
+        minimum: 1,
+        description:
+          'Optional 1-based first line to return (inclusive). Omit to read from line 1. Combine with end_line to read a slice.',
+      },
+      end_line: {
+        type: 'integer',
+        minimum: 1,
+        description:
+          'Optional 1-based last line to return (inclusive). Omit to read to end of file. Clamped to the file length if larger.',
       },
     },
   },

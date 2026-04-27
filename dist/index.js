@@ -571,7 +571,7 @@ const reviewSchema_1 = __nccwpck_require__(9978);
  */
 exports.readFileTool = {
     name: 'read_file',
-    description: 'Read a file from the PR head. Use to inspect source files referenced by the diff (helpers, types, test fixtures, configs) that you need to review the change correctly. Do NOT use to fetch entire READMEs or large generated files. Each session has a budget; spend it on files that meaningfully change your review.',
+    description: 'Read a file (or a slice of one) from the PR head. Use to inspect source files referenced by the diff (helpers, types, test fixtures, configs) that you need to review the change correctly. Prefer requesting a line range when you only need a specific function or block — it spends less of the per-session byte budget and lets you peek into more files. Output is line-numbered; cite those exact line numbers in your review comments.',
     parameters: {
         type: 'object',
         additionalProperties: false,
@@ -584,6 +584,16 @@ exports.readFileTool = {
             reason: {
                 type: 'string',
                 description: 'One short sentence on why this file is necessary to review the change. Helps audit unnecessary reads.',
+            },
+            start_line: {
+                type: 'integer',
+                minimum: 1,
+                description: 'Optional 1-based first line to return (inclusive). Omit to read from line 1. Combine with end_line to read a slice.',
+            },
+            end_line: {
+                type: 'integer',
+                minimum: 1,
+                description: 'Optional 1-based last line to return (inclusive). Omit to read to end of file. Clamped to the file length if larger.',
             },
         },
     },
@@ -742,7 +752,7 @@ class AnthropicProvider {
             const toolResults = await Promise.all(reads.map(async (b) => {
                 var _a, _b, _c;
                 const input = ((_a = b.input) !== null && _a !== void 0 ? _a : {});
-                const content = await request.tools.readFile((_b = input.path) !== null && _b !== void 0 ? _b : '', (_c = input.reason) !== null && _c !== void 0 ? _c : '');
+                const content = await request.tools.readFile((_b = input.path) !== null && _b !== void 0 ? _b : '', (_c = input.reason) !== null && _c !== void 0 ? _c : '', { startLine: input.start_line, endLine: input.end_line });
                 return {
                     type: 'tool_result',
                     tool_use_id: b.id,
@@ -955,7 +965,7 @@ class GeminiProvider {
             const responses = await Promise.all(reads.map(async (c) => {
                 var _a, _b, _c;
                 const args = (_a = c.args) !== null && _a !== void 0 ? _a : {};
-                const content = await request.tools.readFile((_b = args.path) !== null && _b !== void 0 ? _b : '', (_c = args.reason) !== null && _c !== void 0 ? _c : '');
+                const content = await request.tools.readFile((_b = args.path) !== null && _b !== void 0 ? _b : '', (_c = args.reason) !== null && _c !== void 0 ? _c : '', { startLine: args.start_line, endLine: args.end_line });
                 return { name: 'read_file', response: { content } };
             }));
             contents.push({
@@ -1147,7 +1157,7 @@ class OpenAIProvider {
                     args = JSON.parse(read.function.arguments);
                 }
                 catch { /* keep empty */ }
-                const content = await request.tools.readFile((_c = args.path) !== null && _c !== void 0 ? _c : '', (_d = args.reason) !== null && _d !== void 0 ? _d : '');
+                const content = await request.tools.readFile((_c = args.path) !== null && _c !== void 0 ? _c : '', (_d = args.reason) !== null && _d !== void 0 ? _d : '', { startLine: args.start_line, endLine: args.end_line });
                 messages.push({ role: 'tool', tool_call_id: read.id, content });
             }
         }
@@ -1363,14 +1373,24 @@ function makeAgenticEnv(opts) {
     };
 }
 /**
- * Execute the read_file tool. Returns either the file contents or a
- * short error message that the model can act on. Never throws.
+ * Execute the read_file tool. Returns either the (line-numbered) file
+ * contents or a short error message that the model can act on. Never
+ * throws.
  *
- * Path safety: rejects absolute paths, parent traversal (`..`),
- * empty paths, and anything matching EXCLUDE_PATTERNS. Caps total
- * file count and per-file size from `limits`.
+ * Behavior:
+ *   - Path safety: rejects absolute paths, parent traversal (`..`),
+ *     empty paths, and anything matching EXCLUDE_PATTERNS.
+ *   - Optional start_line / end_line slices the file. Both 1-based
+ *     and inclusive. end_line is clamped to file length. start_line
+ *     defaults to 1, end_line defaults to last line.
+ *   - Output is line-numbered (`<n>: <text>`) so the model can cite
+ *     accurate review-comment line numbers without arithmetic.
+ *   - Dedup key is "path:start:end" — reading lines 1-100 does NOT
+ *     block a follow-up read of lines 101-200 of the same file.
+ *   - Budget is by RETURNED bytes (after slicing/truncation), so a
+ *     small slice of a huge file barely spends from the per-file cap.
  */
-async function executeReadFile(env, path, reason) {
+async function executeReadFile(env, path, reason, args = {}) {
     if (!path || typeof path !== 'string') {
         return 'error: read_file requires a non-empty "path" argument';
     }
@@ -1378,30 +1398,64 @@ async function executeReadFile(env, path, reason) {
     if (cleanPath.startsWith('/') || cleanPath.includes('..')) {
         return `error: invalid path '${cleanPath}' — must be a repo-relative path without leading "/" or ".."`;
     }
-    if (env.filesRead.has(cleanPath)) {
-        const prevSize = env.filesRead.get(cleanPath);
-        return `error: '${cleanPath}' was already read in this session (${prevSize} bytes); reuse the previous result instead of re-reading`;
-    }
     if (env.excludePatterns.some(p => (0, minimatch_1.minimatch)(cleanPath, p, { matchBase: true, dot: true }))) {
         return `error: '${cleanPath}' matches EXCLUDE_PATTERNS — not readable in this session`;
     }
+    // Validate range args before checking budget — bad args shouldn't consume a slot.
+    let start = args.startLine;
+    let end = args.endLine;
+    if (start !== undefined && (!Number.isInteger(start) || start < 1)) {
+        return `error: start_line must be an integer >= 1; got ${start}`;
+    }
+    if (end !== undefined && (!Number.isInteger(end) || end < 1)) {
+        return `error: end_line must be an integer >= 1; got ${end}`;
+    }
+    if (start !== undefined && end !== undefined && end < start) {
+        return `error: end_line (${end}) must be >= start_line (${start})`;
+    }
+    const dedupKey = rangeKey(cleanPath, start, end);
+    if (env.filesRead.has(dedupKey)) {
+        const prevSize = env.filesRead.get(dedupKey);
+        return `error: '${dedupKey}' was already read in this session (${prevSize} bytes); reuse the previous result instead of re-reading`;
+    }
     if (env.filesRead.size >= env.limits.maxFiles) {
-        return `error: read budget exhausted — already read ${env.filesRead.size} files (limit ${env.limits.maxFiles}). Submit your review now.`;
+        return `error: read budget exhausted — already read ${env.filesRead.size} files/slices (limit ${env.limits.maxFiles}). Submit your review now.`;
     }
     const content = await env.github.getFileContent(cleanPath, env.ref, { quiet: true });
     if (!content) {
-        env.filesRead.set(cleanPath, 0);
+        env.filesRead.set(dedupKey, 0);
         return `error: '${cleanPath}' not found at PR head`;
     }
-    const cap = env.limits.maxBytesPerFile;
-    if (content.length > cap) {
-        env.filesRead.set(cleanPath, cap);
-        core.info(`[agentic] read_file ${cleanPath} (${content.length} bytes, truncated to ${cap}) — ${reason}`);
-        return `[truncated to ${cap} of ${content.length} bytes]\n${content.slice(0, cap)}`;
+    // Slice by lines (or take the whole file when no range was requested).
+    const allLines = content.split('\n');
+    const total = allLines.length;
+    const startIdx = (start !== null && start !== void 0 ? start : 1) - 1;
+    const endIdx = end !== undefined ? Math.min(end, total) : total;
+    const slice = allLines.slice(startIdx, endIdx);
+    if (slice.length === 0) {
+        env.filesRead.set(dedupKey, 0);
+        return `error: '${cleanPath}' has ${total} lines; requested range ${start !== null && start !== void 0 ? start : 1}-${end !== null && end !== void 0 ? end : total} is empty`;
     }
-    env.filesRead.set(cleanPath, content.length);
-    core.info(`[agentic] read_file ${cleanPath} (${content.length} bytes) — ${reason}`);
-    return content;
+    // Line-number the output so the model cites real lines in comments.
+    const padTo = String(startIdx + slice.length).length;
+    const numbered = slice
+        .map((line, i) => `${String(startIdx + 1 + i).padStart(padTo, ' ')}: ${line}`)
+        .join('\n');
+    const cap = env.limits.maxBytesPerFile;
+    if (numbered.length > cap) {
+        const out = `[truncated to ${cap} of ${numbered.length} bytes]\n${numbered.slice(0, cap)}`;
+        env.filesRead.set(dedupKey, cap);
+        core.info(`[agentic] read_file ${dedupKey} (${numbered.length} bytes, truncated to ${cap}) — ${reason}`);
+        return out;
+    }
+    env.filesRead.set(dedupKey, numbered.length);
+    core.info(`[agentic] read_file ${dedupKey} (${numbered.length} bytes) — ${reason}`);
+    return numbered;
+}
+function rangeKey(path, start, end) {
+    if (start === undefined && end === undefined)
+        return path;
+    return `${path}:${start !== null && start !== void 0 ? start : 1}:${end !== null && end !== void 0 ? end : 'end'}`;
 }
 
 
@@ -2159,7 +2213,7 @@ class ReviewService {
                 },
                 tools: agenticEnv
                     ? {
-                        readFile: (path, reason) => (0, AgenticToolRunner_1.executeReadFile)(agenticEnv, path, reason),
+                        readFile: (path, reason, args) => (0, AgenticToolRunner_1.executeReadFile)(agenticEnv, path, reason, args),
                     }
                     : undefined,
             });

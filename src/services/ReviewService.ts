@@ -161,7 +161,7 @@ export class ReviewService {
         },
         tools: agenticEnv
           ? {
-              readFile: (path: string, reason: string) => executeReadFile(agenticEnv, path, reason),
+              readFile: (path, reason, args) => executeReadFile(agenticEnv, path, reason, args),
             }
           : undefined,
       }),

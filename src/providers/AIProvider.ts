@@ -46,7 +46,11 @@ export interface ReviewRequest {
    * shot. The terminator tool is `submit_review`.
    */
   tools?: {
-    readFile: (path: string, reason: string) => Promise<string>;
+    readFile: (
+      path: string,
+      reason: string,
+      args?: { startLine?: number; endLine?: number },
+    ) => Promise<string>;
   };
 }
 

@@ -16,23 +16,29 @@ addition to the generic guidance.
   - "`gpt-4o` works on GitHub Models" — *wrong*; Models requires the
     `publisher/model` form (`openai/gpt-4o`).
 
-## Use read_file aggressively
+## Use read_file aggressively (with line ranges)
 
 This repo runs in agentic mode (`agentic_review: true`). When the diff
 references a function, type, or test fixture that isn't in the diff,
 **read it before commenting**. Comments rooted in "I assume X works
 like…" are worse than no comment.
 
+**Prefer line ranges.** When you only need a specific function or block,
+pass `start_line` / `end_line` instead of pulling the whole file. Output
+is line-numbered (`<n>: <text>`); cite those exact numbers in your review
+comments. A typical session should look more like "read lines 80-120 of
+src/foo.ts" than "read all of src/foo.ts".
+
 Strong reasons to call `read_file`:
-- The diff calls a helper not shown — read it to know its contract.
-- A test was added or changed — read the test to confirm it actually
-  exercises the behavior the PR claims.
+- The diff calls a helper not shown — read just that helper.
+- A test was added or changed — read just the test it touches.
 - A type or interface is referenced but not defined in the diff — read
-  the source.
+  the relevant lines, not the whole types module.
 
 Weak reasons (skip):
 - "Just to get more context." Be specific about what is actually missing.
 - READMEs / docs files unless the PR changes them.
+- Pulling a whole file when you only care about ~30 lines.
 
 ## Recognize intentional patterns
 
