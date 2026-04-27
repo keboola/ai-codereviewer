@@ -2,7 +2,7 @@ import { GenerativeModel, GoogleGenerativeAI } from '@google/generative-ai';
 import { AIProvider, AIProviderConfig, ReviewRequest, ReviewResponse } from './AIProvider';
 import * as core from '@actions/core';
 import { jsonrepair } from 'jsonrepair'
-import { buildSystemPrompt, reviewResponseSchema } from '../prompts';
+import { buildSystemPrompt, buildUserPayload, reviewResponseSchema } from '../prompts';
 import { toGeminiSchema } from './geminiSchemaAdapter';
 
 // Single source of truth for the response shape lives in
@@ -73,7 +73,7 @@ export class GeminiProvider implements AIProvider {
           role: 'user',
           parts: [
             {
-              text: this.buildPullRequestPrompt(request),
+              text: buildUserPayload(request),
             }
           ]
         }
@@ -99,23 +99,6 @@ export class GeminiProvider implements AIProvider {
       cachedInputTokens: u.cachedContentTokenCount,
       totalTokens: u.totalTokenCount,
     };
-  }
-
-  private buildPullRequestPrompt(request: ReviewRequest): string {
-    return JSON.stringify({
-      type: 'code_review',
-      files: request.files,
-      pr: request.pullRequest,
-      context: request.context,
-      previousReviews: request.previousReviews?.map(review => ({
-        summary: review.summary,
-        lineComments: review.lineComments.map(comment => ({
-          path: comment.path,
-          line: comment.line,
-          comment: comment.comment
-        }))
-      }))
-    });
   }
 
   private parseResponse(response: any): ReviewResponse {

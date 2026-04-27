@@ -187,6 +187,54 @@ function buildSystemPrompt(request) {
 
 /***/ }),
 
+/***/ 8466:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.buildUserPayload = buildUserPayload;
+/**
+ * Build the JSON payload sent as the user message to every provider.
+ *
+ * Includes:
+ *   - files:        the modified files (path, content, diff) of this PR
+ *   - contextFiles: extra files the consumer pinned via CONTEXT_FILES
+ *                   (default: package.json, README.md). Useful for the
+ *                   model to understand project shape without re-fetching.
+ *   - pr:           title, description, base/head SHAs
+ *   - context:      repository, owner, projectContext, isUpdate
+ *                   (NOTE: repoInstructions is intentionally stripped
+ *                   here — it's already in the system prompt where it
+ *                   gets cached. Keeping it here too would double-count
+ *                   tokens and bypass caching.)
+ *   - previousReviews: prior bot comments, slimmed down to (path, line,
+ *                   comment, summary). The full review object has more
+ *                   fields the model doesn't need.
+ */
+function buildUserPayload(request) {
+    var _a;
+    const { repoInstructions: _omit, ...contextSansInstructions } = request.context;
+    return JSON.stringify({
+        type: 'code_review',
+        files: request.files,
+        contextFiles: request.contextFiles,
+        pr: request.pullRequest,
+        context: contextSansInstructions,
+        previousReviews: (_a = request.previousReviews) === null || _a === void 0 ? void 0 : _a.map(review => ({
+            summary: review.summary,
+            lineComments: review.lineComments.map(c => ({
+                path: c.path,
+                line: c.line,
+                comment: c.comment,
+            })),
+        })),
+    });
+}
+
+
+/***/ }),
+
 /***/ 264:
 /***/ ((__unused_webpack_module, exports) => {
 
@@ -426,6 +474,7 @@ var __exportStar = (this && this.__exportStar) || function(m, exports) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 __exportStar(__nccwpck_require__(264), exports);
 __exportStar(__nccwpck_require__(3278), exports);
+__exportStar(__nccwpck_require__(8466), exports);
 __exportStar(__nccwpck_require__(9978), exports);
 
 
@@ -559,7 +608,7 @@ class AnthropicProvider {
             messages: [
                 {
                     role: 'user',
-                    content: `${this.buildPullRequestPrompt(request)}\n\nReturn the response in JSON format only, no other text or comments.`,
+                    content: `${(0, prompts_1.buildUserPayload)(request)}\n\nReturn the response in JSON format only, no other text or comments.`,
                 },
             ],
             temperature: (_a = this.config.temperature) !== null && _a !== void 0 ? _a : 0.3,
@@ -595,23 +644,6 @@ class AnthropicProvider {
             cachedInputTokens: u.cache_read_input_tokens,
             totalTokens: inputTokens + ((_d = u.output_tokens) !== null && _d !== void 0 ? _d : 0),
         };
-    }
-    buildPullRequestPrompt(request) {
-        var _a;
-        return JSON.stringify({
-            type: 'code_review',
-            files: request.files,
-            pr: request.pullRequest,
-            context: request.context,
-            previousReviews: (_a = request.previousReviews) === null || _a === void 0 ? void 0 : _a.map(review => ({
-                summary: review.summary,
-                lineComments: review.lineComments.map(comment => ({
-                    path: comment.path,
-                    line: comment.line,
-                    comment: comment.comment
-                }))
-            }))
-        });
     }
     parseResponse(response) {
         try {
@@ -742,7 +774,7 @@ class GeminiProvider {
                     role: 'user',
                     parts: [
                         {
-                            text: this.buildPullRequestPrompt(request),
+                            text: (0, prompts_1.buildUserPayload)(request),
                         }
                     ]
                 }
@@ -765,23 +797,6 @@ class GeminiProvider {
             cachedInputTokens: u.cachedContentTokenCount,
             totalTokens: u.totalTokenCount,
         };
-    }
-    buildPullRequestPrompt(request) {
-        var _a;
-        return JSON.stringify({
-            type: 'code_review',
-            files: request.files,
-            pr: request.pullRequest,
-            context: request.context,
-            previousReviews: (_a = request.previousReviews) === null || _a === void 0 ? void 0 : _a.map(review => ({
-                summary: review.summary,
-                lineComments: review.lineComments.map(comment => ({
-                    path: comment.path,
-                    line: comment.line,
-                    comment: comment.comment
-                }))
-            }))
-        });
     }
     parseResponse(response) {
         try {
@@ -877,7 +892,7 @@ class OpenAIProvider {
                 },
                 {
                     role: 'user',
-                    content: this.buildPullRequestPrompt(request),
+                    content: (0, prompts_1.buildUserPayload)(request),
                 },
             ],
             temperature: this.getTemperature(),
@@ -900,23 +915,6 @@ class OpenAIProvider {
             cachedInputTokens: (_a = u.prompt_tokens_details) === null || _a === void 0 ? void 0 : _a.cached_tokens,
             totalTokens: u.total_tokens,
         };
-    }
-    buildPullRequestPrompt(request) {
-        var _a;
-        return JSON.stringify({
-            type: 'code_review',
-            files: request.files,
-            pr: request.pullRequest,
-            context: request.context,
-            previousReviews: (_a = request.previousReviews) === null || _a === void 0 ? void 0 : _a.map(review => ({
-                summary: review.summary,
-                lineComments: review.lineComments.map(comment => ({
-                    path: comment.path,
-                    line: comment.line,
-                    comment: comment.comment
-                }))
-            }))
-        });
     }
     parseResponse(response) {
         var _a;

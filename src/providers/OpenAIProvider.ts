@@ -2,7 +2,7 @@ import OpenAI from 'openai';
 import { jsonrepair } from 'jsonrepair';
 import { AIProvider, AIProviderConfig, ReviewRequest, ReviewResponse } from './AIProvider';
 import * as core from '@actions/core';
-import { buildSystemPrompt, reviewResponseSchema } from '../prompts';
+import { buildSystemPrompt, buildUserPayload, reviewResponseSchema } from '../prompts';
 
 export class OpenAIProvider implements AIProvider {
   private config!: AIProviderConfig;
@@ -30,7 +30,7 @@ export class OpenAIProvider implements AIProvider {
         },
         {
           role: 'user',
-          content: this.buildPullRequestPrompt(request),
+          content: buildUserPayload(request),
         },
       ],
       temperature: this.getTemperature(),
@@ -55,23 +55,6 @@ export class OpenAIProvider implements AIProvider {
       cachedInputTokens: u.prompt_tokens_details?.cached_tokens,
       totalTokens: u.total_tokens,
     };
-  }
-
-  private buildPullRequestPrompt(request: ReviewRequest): string {
-    return JSON.stringify({
-      type: 'code_review',
-      files: request.files,
-      pr: request.pullRequest,
-      context: request.context,
-      previousReviews: request.previousReviews?.map(review => ({
-        summary: review.summary,
-        lineComments: review.lineComments.map(comment => ({
-          path: comment.path,
-          line: comment.line,
-          comment: comment.comment
-        }))
-      }))
-    });
   }
 
   private parseResponse(response: OpenAI.Chat.Completions.ChatCompletion): ReviewResponse {
