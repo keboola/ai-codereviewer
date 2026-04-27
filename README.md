@@ -113,6 +113,7 @@ Regardless of mode, applying the `ai-review` label to any PR always triggers a f
 |-------|-------------|---------|
 | `AI_PROVIDER` | AI provider to use (`openai`, `anthropic`, `google`) | `openai` |
 | `AI_API_KEY` | API key for chosen provider | Required |
+| `AI_BASE_URL` | Optional OpenAI-compatible endpoint override (e.g. `https://models.github.ai/inference` for GitHub Models). Affects only the `openai` provider. | `""` |
 | `AI_MODEL` | Model to use (see supported models below) | Provider's default |
 | `AI_TEMPERATURE` | Temperature for AI model | `0` |
 | `APPROVE_REVIEWS` | Whether to approve PRs automatically | `true` |
@@ -247,6 +248,34 @@ accept this for private content.
 ### Supported Models
 
 All models supported by the provider should be supported.
+
+### Using GitHub Models (OpenAI-compatible)
+
+GitHub Models is OpenAI-compatible, so the existing `openai` provider can route at it via `AI_BASE_URL`:
+
+```yaml
+- uses: keboola/ai-code-reviewer@main
+  with:
+    AI_PROVIDER: "openai"
+    AI_BASE_URL: "https://models.github.ai/inference"
+    AI_MODEL: "openai/gpt-4.1"        # publisher/model is required
+    AI_API_KEY: ${{ secrets.MODELS_PAT }}  # PAT with models:read scope
+```
+
+**Setting up the token.** Models requires its own PAT — `secrets.GITHUB_TOKEN` does **not** carry the `models:read` scope.
+
+1. Create a fine-grained PAT at https://github.com/settings/personal-access-tokens/new.
+2. Under **Account permissions** find **Models** and grant `Read-only`.
+3. Save the resulting `github_pat_…` value.
+4. Store it as a repository or **organization** secret named e.g. `MODELS_PAT` (org-level lets every consumer repo read it without per-repo setup).
+
+**Model IDs.** Models uses a `publisher/model` namespace — e.g. `openai/gpt-4.1`, `openai/gpt-4o-mini`, `openai/o3-mini`. The plain `gpt-4o` form will not resolve.
+
+**Things to know before adopting Models for a high-volume reviewer:**
+
+- **Billing is separate from Copilot Enterprise.** A Copilot seat does not fund Models usage. Models has its own metered billing (Azure-backed) on top of a free tier.
+- **Free-tier rate limits are tight** (roughly 15 req/min, 150 req/day for the "low" tier and lower for reasoning models), which is well below what a fleet-wide PR reviewer needs. Plan to enable paid usage.
+- Only the `openai` provider honors `AI_BASE_URL`; `anthropic` and `google` ignore it.
 
 ## Development
 

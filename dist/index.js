@@ -55,6 +55,7 @@ async function main() {
         const provider = core.getInput('AI_PROVIDER');
         const model = core.getInput('AI_MODEL');
         const apiKey = core.getInput('AI_API_KEY');
+        const baseURL = core.getInput('AI_BASE_URL');
         const githubToken = core.getInput('GITHUB_TOKEN');
         const temperature = parseFloat(core.getInput('AI_TEMPERATURE') || '0');
         // Get new configuration inputs
@@ -76,6 +77,7 @@ async function main() {
             apiKey,
             model,
             temperature,
+            baseURL: baseURL || undefined,
         });
         // Initialize services
         const githubService = new GitHubService_1.GitHubService(githubToken);
@@ -728,7 +730,12 @@ const prompts_1 = __nccwpck_require__(9493);
 class OpenAIProvider {
     async initialize(config) {
         this.config = config;
-        this.client = new openai_1.default({ apiKey: config.apiKey });
+        const clientOptions = { apiKey: config.apiKey };
+        if (config.baseURL) {
+            clientOptions.baseURL = config.baseURL;
+            core.info(`OpenAI client routed to baseURL: ${config.baseURL}`);
+        }
+        this.client = new openai_1.default(clientOptions);
     }
     async review(request) {
         core.info(`Sending request to OpenAI with prompt structure: ${JSON.stringify(request, null, 2)}`);
