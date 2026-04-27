@@ -59,6 +59,7 @@ async function main() {
         const temperature = parseFloat(core.getInput('AI_TEMPERATURE') || '0');
         // Get new configuration inputs
         const approveReviews = core.getBooleanInput('APPROVE_REVIEWS');
+        const approveConfidenceThreshold = parseInt(core.getInput('APPROVE_CONFIDENCE_THRESHOLD') || '80', 10);
         const maxComments = parseInt(core.getInput('MAX_COMMENTS') || '0', 10);
         const minCommentSeverity = (core.getInput('MIN_COMMENT_SEVERITY') || 'minor').toLowerCase();
         const projectContext = core.getInput('PROJECT_CONTEXT');
@@ -78,6 +79,7 @@ async function main() {
         const reviewService = new ReviewService_1.ReviewService(aiProvider, githubService, diffService, {
             maxComments,
             approveReviews,
+            approveConfidenceThreshold,
             projectContext,
             contextFiles,
             providerLabel: provider,
@@ -1288,9 +1290,14 @@ class ReviewService {
         this.aiProvider = aiProvider;
         this.githubService = githubService;
         this.diffService = diffService;
+        const rawThreshold = config.approveConfidenceThreshold;
+        const threshold = (typeof rawThreshold === 'number' && Number.isFinite(rawThreshold))
+            ? rawThreshold
+            : 80;
         this.config = {
             maxComments: config.maxComments || 0,
             approveReviews: config.approveReviews,
+            approveConfidenceThreshold: threshold,
             projectContext: config.projectContext,
             contextFiles: config.contextFiles || ['package.json', 'README.md'],
             providerLabel: config.providerLabel,
@@ -1367,7 +1374,10 @@ class ReviewService {
         await this.githubService.submitReview(prNumber, {
             ...review,
             lineComments: cappedComments,
-            suggestedAction: this.normalizeReviewEvent(review.suggestedAction, { hasBlocker }),
+            suggestedAction: this.normalizeReviewEvent(review.suggestedAction, {
+                hasBlocker,
+                confidence: review.confidence,
+            }),
         }, validLinesByPath);
         return review;
     }
@@ -1431,7 +1441,7 @@ class ReviewService {
         return kept;
     }
     commentKey(path, line, body) {
-        return `${path} ${line} ${body.trim().replace(/\s+/g, ' ').toLowerCase()}`;
+        return `${path} ${line} ${body.trim().replace(/\s+/g, ' ').toLowerCase()}`;
     }
     async getRepositoryContext() {
         const results = [];
@@ -1449,18 +1459,29 @@ class ReviewService {
         return results;
     }
     normalizeReviewEvent(action, signals) {
-        if (!this.config.approveReviews) {
-            return signals.hasBlocker ? 'REQUEST_CHANGES' : 'COMMENT';
-        }
+        var _a;
         if (signals.hasBlocker) {
             return 'REQUEST_CHANGES';
         }
-        const eventMap = {
-            'approve': 'APPROVE',
-            'request_changes': 'REQUEST_CHANGES',
-            'comment': 'COMMENT',
-        };
-        return eventMap[(action || '').toLowerCase()] || 'COMMENT';
+        if (!this.config.approveReviews) {
+            return 'COMMENT';
+        }
+        const normalized = (action || '').toLowerCase();
+        const threshold = (_a = this.config.approveConfidenceThreshold) !== null && _a !== void 0 ? _a : 80;
+        const confidence = (typeof signals.confidence === 'number' && Number.isFinite(signals.confidence))
+            ? signals.confidence
+            : 0;
+        if (normalized === 'approve') {
+            if (confidence >= threshold) {
+                return 'APPROVE';
+            }
+            core.info(`Downgrading approve to comment: confidence ${confidence} < threshold ${threshold}`);
+            return 'COMMENT';
+        }
+        if (normalized === 'request_changes') {
+            return 'REQUEST_CHANGES';
+        }
+        return 'COMMENT';
     }
 }
 exports.ReviewService = ReviewService;

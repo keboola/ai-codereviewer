@@ -23,6 +23,10 @@ inputs:
     description: "Whether to approve/reject PRs automatically"
     required: false
     default: "true"
+  APPROVE_CONFIDENCE_THRESHOLD:
+    description: "Minimum AI confidence (0-100) required to auto-approve. Below this, an 'approve' verdict is downgraded to 'comment'."
+    required: false
+    default: "80"
   MAX_COMMENTS:
     description: "Maximum number of review comments"
     required: false
