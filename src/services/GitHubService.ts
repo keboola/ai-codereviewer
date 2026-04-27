@@ -32,7 +32,19 @@ export class GitHubService {
           core.debug(`Authenticated as: ${data.login}`);
           return data.login;
         } catch (error) {
-          core.warning(`Failed to resolve authenticated user, falling back to github-actions[bot]: ${error}`);
+          // 401/403/404 here is the expected response for a workflow's default
+          // GITHUB_TOKEN — it's an integration credential, not a user, so
+          // /user is not accessible. The 'github-actions[bot]' fallback IS
+          // the correct identity for that case, so we don't want a warning.
+          // For other errors (network, 5xx, etc.) something might actually be
+          // wrong, so warn so it's visible in Actions logs.
+          const status = (error as { status?: number })?.status;
+          const expected = status === 401 || status === 403 || status === 404;
+          if (expected) {
+            core.debug(`/user not accessible (${status}); using github-actions[bot] as bot identity`);
+          } else {
+            core.warning(`Failed to resolve authenticated user, falling back to github-actions[bot]: ${error}`);
+          }
           return 'github-actions[bot]';
         }
       })();

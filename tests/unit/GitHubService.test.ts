@@ -73,4 +73,32 @@ describe('GitHubService.submitReview', () => {
     expect(b).toBe('ai-reviewer-bot');
     expect(getAuthenticated).toHaveBeenCalledTimes(1);
   });
+
+  it('falls back silently (debug, not warning) on 403 from /user — the integration-token case', async () => {
+    getAuthenticated.mockRejectedValueOnce(Object.assign(new Error('boom'), { status: 403 }));
+    const warnSpy = jest.spyOn(require('@actions/core'), 'warning').mockImplementation(() => {});
+    const debugSpy = jest.spyOn(require('@actions/core'), 'debug').mockImplementation(() => {});
+
+    const service = new GitHubService('default-github-token');
+    const login = await service.getBotLogin();
+
+    expect(login).toBe('github-actions[bot]');
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(debugSpy).toHaveBeenCalledWith(expect.stringContaining('not accessible'));
+
+    warnSpy.mockRestore();
+    debugSpy.mockRestore();
+  });
+
+  it('warns on unexpected /user errors (e.g. 5xx, network)', async () => {
+    getAuthenticated.mockRejectedValueOnce(Object.assign(new Error('boom'), { status: 502 }));
+    const warnSpy = jest.spyOn(require('@actions/core'), 'warning').mockImplementation(() => {});
+
+    const service = new GitHubService('mock-token');
+    const login = await service.getBotLogin();
+
+    expect(login).toBe('github-actions[bot]');
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Failed to resolve authenticated user'));
+    warnSpy.mockRestore();
+  });
 });
