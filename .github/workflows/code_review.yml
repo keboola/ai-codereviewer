@@ -35,5 +35,5 @@ jobs:
           AI_MODEL: "gemini-2.5-pro"
           AI_TEMPERATURE: 0.3 # 0 to 1 - higher values = more creativity and variance
           MAX_COMMENTS: 5 # Optional: defaults to 10
-          APPROVE_REVIEWS: false # Optional: defaults to false
+          APPROVE_REVIEWS: true
           EXCLUDE_PATTERNS: "yarn.lock,dist/**"
