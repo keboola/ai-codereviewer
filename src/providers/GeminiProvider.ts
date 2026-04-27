@@ -84,9 +84,21 @@ export class GeminiProvider implements AIProvider {
     core.info(`Raw Gemini response: ${JSON.stringify(response.text(), null, 2)}`);
 
     const parsedResponse = this.parseResponse(response);
+    parsedResponse.usage = this.extractUsage(response);
     core.info(`Parsed response: ${JSON.stringify(parsedResponse, null, 2)}`);
 
     return parsedResponse;
+  }
+
+  private extractUsage(response: any) {
+    const u = response.usageMetadata;
+    if (!u) return undefined;
+    return {
+      inputTokens: u.promptTokenCount,
+      outputTokens: u.candidatesTokenCount,
+      cachedInputTokens: u.cachedContentTokenCount,
+      totalTokens: u.totalTokenCount,
+    };
   }
 
   private buildPullRequestPrompt(request: ReviewRequest): string {

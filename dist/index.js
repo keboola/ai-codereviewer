@@ -63,6 +63,7 @@ async function main() {
         const approveConfidenceThreshold = parseInt(core.getInput('APPROVE_CONFIDENCE_THRESHOLD') || '80', 10);
         const maxComments = parseInt(core.getInput('MAX_COMMENTS') || '0', 10);
         const minCommentSeverity = (core.getInput('MIN_COMMENT_SEVERITY') || 'minor').toLowerCase();
+        validateInputs({ provider, minCommentSeverity });
         const projectContext = core.getInput('PROJECT_CONTEXT');
         const projectContextFile = core.getInput('PROJECT_CONTEXT_FILE');
         const instructionsFile = core.getInput('INSTRUCTIONS_FILE');
@@ -104,6 +105,16 @@ async function main() {
     }
     catch (error) {
         core.setFailed(`Action failed: ${error.message}`);
+    }
+}
+const VALID_PROVIDERS = ['openai', 'anthropic', 'google'];
+const VALID_SEVERITIES = ['blocker', 'major', 'minor', 'nit'];
+function validateInputs({ provider, minCommentSeverity }) {
+    if (!VALID_PROVIDERS.includes(provider.toLowerCase())) {
+        throw new Error(`AI_PROVIDER must be one of [${VALID_PROVIDERS.join(', ')}]; got '${provider}'`);
+    }
+    if (!VALID_SEVERITIES.includes(minCommentSeverity)) {
+        throw new Error(`MIN_COMMENT_SEVERITY must be one of [${VALID_SEVERITIES.join(', ')}]; got '${minCommentSeverity}'`);
     }
 }
 function getProvider(provider) {
@@ -566,8 +577,22 @@ class AnthropicProvider {
         }
         core.debug(`Raw Anthropic response: ${JSON.stringify(firstBlock.text, null, 2)}`);
         const parsedResponse = this.parseResponse(response);
+        parsedResponse.usage = this.extractUsage(response);
         core.info(`Parsed response: ${JSON.stringify(parsedResponse, null, 2)}`);
         return parsedResponse;
+    }
+    extractUsage(response) {
+        var _a, _b, _c, _d;
+        const u = response.usage;
+        if (!u)
+            return undefined;
+        const inputTokens = ((_a = u.input_tokens) !== null && _a !== void 0 ? _a : 0) + ((_b = u.cache_creation_input_tokens) !== null && _b !== void 0 ? _b : 0) + ((_c = u.cache_read_input_tokens) !== null && _c !== void 0 ? _c : 0);
+        return {
+            inputTokens,
+            outputTokens: u.output_tokens,
+            cachedInputTokens: u.cache_read_input_tokens,
+            totalTokens: inputTokens + ((_d = u.output_tokens) !== null && _d !== void 0 ? _d : 0),
+        };
     }
     buildPullRequestPrompt(request) {
         var _a;
@@ -724,8 +749,20 @@ class GeminiProvider {
         const response = result.response;
         core.info(`Raw Gemini response: ${JSON.stringify(response.text(), null, 2)}`);
         const parsedResponse = this.parseResponse(response);
+        parsedResponse.usage = this.extractUsage(response);
         core.info(`Parsed response: ${JSON.stringify(parsedResponse, null, 2)}`);
         return parsedResponse;
+    }
+    extractUsage(response) {
+        const u = response.usageMetadata;
+        if (!u)
+            return undefined;
+        return {
+            inputTokens: u.promptTokenCount,
+            outputTokens: u.candidatesTokenCount,
+            cachedInputTokens: u.cachedContentTokenCount,
+            totalTokens: u.totalTokenCount,
+        };
     }
     buildPullRequestPrompt(request) {
         var _a;
@@ -846,8 +883,21 @@ class OpenAIProvider {
         });
         core.debug(`Raw OpenAI response: ${JSON.stringify(response.choices[0].message.content, null, 2)}`);
         const parsedResponse = this.parseResponse(response);
+        parsedResponse.usage = this.extractUsage(response);
         core.info(`Parsed response: ${JSON.stringify(parsedResponse, null, 2)}`);
         return parsedResponse;
+    }
+    extractUsage(response) {
+        var _a;
+        const u = response.usage;
+        if (!u)
+            return undefined;
+        return {
+            inputTokens: u.prompt_tokens,
+            outputTokens: u.completion_tokens,
+            cachedInputTokens: (_a = u.prompt_tokens_details) === null || _a === void 0 ? void 0 : _a.cached_tokens,
+            totalTokens: u.total_tokens,
+        };
     }
     buildPullRequestPrompt(request) {
         var _a;
@@ -1158,6 +1208,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.GitHubService = void 0;
 const rest_1 = __nccwpck_require__(5772);
 const core = __importStar(__nccwpck_require__(7484));
+const retry_1 = __nccwpck_require__(1001);
 class GitHubService {
     constructor(token) {
         var _a;
@@ -1237,26 +1288,26 @@ class GitHubService {
         core.debug(`Review comments: ${JSON.stringify(comments, null, 2)}`);
         const event = suggestedAction.toUpperCase();
         try {
-            await this.octokit.pulls.createReview({
+            await (0, retry_1.withRetry)(() => this.octokit.pulls.createReview({
                 owner: this.owner,
                 repo: this.repo,
                 pull_number: prNumber,
                 body: summary,
                 comments,
                 event,
-            });
+            }), { label: 'pulls.createReview' });
         }
         catch (error) {
             core.warning(`Failed to submit review with comments: ${error}`);
             core.info('Retrying without line comments...');
-            await this.octokit.pulls.createReview({
+            await (0, retry_1.withRetry)(() => this.octokit.pulls.createReview({
                 owner: this.owner,
                 repo: this.repo,
                 pull_number: prNumber,
                 body: `${summary}\n\n> Note: Some line comments were omitted due to technical limitations.`,
                 comments: [],
                 event,
-            });
+            }), { label: 'pulls.createReview (no comments)' });
         }
     }
     partitionComments(lineComments = [], validRightLinesByPath) {
@@ -1452,6 +1503,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.ReviewService = void 0;
+const retry_1 = __nccwpck_require__(1001);
 const core = __importStar(__nccwpck_require__(7484));
 const SEVERITY_ORDER = ['nit', 'minor', 'major', 'blocker'];
 function severityRank(s) {
@@ -1486,7 +1538,7 @@ class ReviewService {
         };
     }
     async performReview(prNumber) {
-        var _a, _b, _c, _d, _e;
+        var _a, _b, _c;
         core.info(`Starting review for PR #${prNumber}`);
         // Get PR details
         const prDetails = await this.githubService.getPRDetails(prNumber);
@@ -1516,28 +1568,35 @@ class ReviewService {
         // Get repository context (now using configured files)
         const contextFiles = await this.getRepositoryContext();
         const repoInstructions = await this.getRepoInstructions(prDetails.head);
-        // Perform AI review
-        const review = await this.aiProvider.review({
-            files: filesWithContent,
-            contextFiles,
-            previousReviews,
-            pullRequest: {
-                title: prDetails.title,
-                description: prDetails.description,
-                base: prDetails.base,
-                head: prDetails.head,
-            },
-            context: {
-                repository: (_a = process.env.GITHUB_REPOSITORY) !== null && _a !== void 0 ? _a : '',
-                owner: (_b = process.env.GITHUB_REPOSITORY_OWNER) !== null && _b !== void 0 ? _b : '',
-                projectContext: await this.getProjectContext(prDetails.head),
-                repoInstructions,
-                isUpdate,
-            },
-        });
+        // Perform AI review with retry on transient errors
+        const projectContext = await this.getProjectContext(prDetails.head);
+        const review = await (0, retry_1.withRetry)(() => {
+            var _a, _b;
+            return this.aiProvider.review({
+                files: filesWithContent,
+                contextFiles,
+                previousReviews,
+                pullRequest: {
+                    title: prDetails.title,
+                    description: prDetails.description,
+                    base: prDetails.base,
+                    head: prDetails.head,
+                },
+                context: {
+                    repository: (_a = process.env.GITHUB_REPOSITORY) !== null && _a !== void 0 ? _a : '',
+                    owner: (_b = process.env.GITHUB_REPOSITORY_OWNER) !== null && _b !== void 0 ? _b : '',
+                    projectContext,
+                    repoInstructions,
+                    isUpdate,
+                },
+            });
+        }, { label: 'aiProvider.review' });
+        if (review.usage) {
+            await this.writeUsageSummary(review.usage);
+        }
         // Add model name to summary
-        const provider = ((_c = this.config.providerLabel) === null || _c === void 0 ? void 0 : _c.toUpperCase())
-            || ((_d = process.env.INPUT_AI_PROVIDER) === null || _d === void 0 ? void 0 : _d.toUpperCase())
+        const provider = ((_a = this.config.providerLabel) === null || _a === void 0 ? void 0 : _a.toUpperCase())
+            || ((_b = process.env.INPUT_AI_PROVIDER) === null || _b === void 0 ? void 0 : _b.toUpperCase())
             || 'AI';
         const model = this.config.modelLabel
             || process.env.INPUT_AI_MODEL
@@ -1545,7 +1604,7 @@ class ReviewService {
         const modelInfo = `_Code review performed by \`${provider}${model ? ` - ${model}` : ''}\`._`;
         review.summary = `${review.summary}\n\n------\n\n${modelInfo}`;
         const validLinesByPath = new Map(modifiedFiles.map(f => [f.path, f.validRightLines]));
-        const filteredBySeverity = this.filterBySeverity((_e = review.lineComments) !== null && _e !== void 0 ? _e : []);
+        const filteredBySeverity = this.filterBySeverity((_c = review.lineComments) !== null && _c !== void 0 ? _c : []);
         const dedupedComments = this.dedupeAgainstPrevious(filteredBySeverity, previousReviews);
         const validatedComments = this.dropInvalidLines(dedupedComments, validLinesByPath);
         const sortedComments = this.sortBySeverityDesc(validatedComments);
@@ -1624,6 +1683,31 @@ class ReviewService {
     }
     commentKey(path, line, body) {
         return `${path} ${line} ${body.trim().replace(/\s+/g, ' ').toLowerCase()}`;
+    }
+    async writeUsageSummary(usage) {
+        const provider = this.config.providerLabel || 'AI';
+        const model = this.config.modelLabel || '';
+        const fmt = (n) => (typeof n === 'number' ? n.toLocaleString() : '—');
+        try {
+            await core.summary
+                .addHeading('AI review token usage', 3)
+                .addTable([
+                [
+                    { data: 'Provider', header: true },
+                    { data: 'Model', header: true },
+                    { data: 'Input', header: true },
+                    { data: 'Cached input', header: true },
+                    { data: 'Output', header: true },
+                    { data: 'Total', header: true },
+                ],
+                [provider, model, fmt(usage.inputTokens), fmt(usage.cachedInputTokens), fmt(usage.outputTokens), fmt(usage.totalTokens)],
+            ])
+                .write();
+        }
+        catch (e) {
+            core.debug(`Could not write summary: ${e}`);
+        }
+        core.info(`Tokens — input: ${fmt(usage.inputTokens)} (cached: ${fmt(usage.cachedInputTokens)}), output: ${fmt(usage.outputTokens)}, total: ${fmt(usage.totalTokens)}`);
     }
     async getRepoInstructions(headRef) {
         const shared = await this.fetchInstructionsUrl();
@@ -1729,6 +1813,85 @@ class ReviewService {
     }
 }
 exports.ReviewService = ReviewService;
+
+
+/***/ }),
+
+/***/ 1001:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.withRetry = withRetry;
+const core = __importStar(__nccwpck_require__(7484));
+const defaultIsRetriable = (err) => {
+    const e = err;
+    if (typeof (e === null || e === void 0 ? void 0 : e.status) === 'number') {
+        return e.status === 429 || (e.status >= 500 && e.status < 600);
+    }
+    if ((e === null || e === void 0 ? void 0 : e.code) === 'ECONNRESET' || (e === null || e === void 0 ? void 0 : e.code) === 'ETIMEDOUT' || (e === null || e === void 0 ? void 0 : e.code) === 'ENOTFOUND' || (e === null || e === void 0 ? void 0 : e.code) === 'ECONNREFUSED') {
+        return true;
+    }
+    return false;
+};
+async function withRetry(fn, opts = {}) {
+    var _a, _b, _c, _d;
+    const attempts = (_a = opts.attempts) !== null && _a !== void 0 ? _a : 3;
+    const initialDelayMs = (_b = opts.initialDelayMs) !== null && _b !== void 0 ? _b : 1000;
+    const isRetriable = (_c = opts.isRetriable) !== null && _c !== void 0 ? _c : defaultIsRetriable;
+    const label = (_d = opts.label) !== null && _d !== void 0 ? _d : 'operation';
+    let lastErr;
+    for (let i = 0; i < attempts; i++) {
+        try {
+            return await fn();
+        }
+        catch (err) {
+            lastErr = err;
+            const isLast = i === attempts - 1;
+            if (isLast || !isRetriable(err)) {
+                throw err;
+            }
+            const delay = initialDelayMs * Math.pow(2, i);
+            core.warning(`${label} failed on attempt ${i + 1}/${attempts}: ${err}; retrying in ${delay}ms`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+        }
+    }
+    throw lastErr;
+}
 
 
 /***/ }),

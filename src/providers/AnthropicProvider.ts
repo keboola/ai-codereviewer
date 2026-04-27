@@ -63,9 +63,27 @@ export class AnthropicProvider implements AIProvider {
     core.debug(`Raw Anthropic response: ${JSON.stringify(firstBlock.text, null, 2)}`);
 
     const parsedResponse = this.parseResponse(response);
+    parsedResponse.usage = this.extractUsage(response);
     core.info(`Parsed response: ${JSON.stringify(parsedResponse, null, 2)}`);
 
     return parsedResponse;
+  }
+
+  private extractUsage(response: Anthropic.Message) {
+    const u = response.usage as {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+    } | undefined;
+    if (!u) return undefined;
+    const inputTokens = (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0);
+    return {
+      inputTokens,
+      outputTokens: u.output_tokens,
+      cachedInputTokens: u.cache_read_input_tokens,
+      totalTokens: inputTokens + (u.output_tokens ?? 0),
+    };
   }
 
   private buildPullRequestPrompt(request: ReviewRequest): string {
