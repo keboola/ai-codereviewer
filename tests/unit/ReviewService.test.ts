@@ -122,6 +122,92 @@ describe('ReviewService', () => {
     expect(submit.mock.calls[0][1].suggestedAction).toBe('COMMENT');
   });
 
+  it('downgrades approve to comment when confidence is below threshold', async () => {
+    const { githubService, diffService, aiProvider } = makeServices({
+      summary: 'sum',
+      suggestedAction: 'APPROVE',
+      confidence: 60,
+      lineComments: []
+    });
+
+    const service = new ReviewService(aiProvider, githubService, diffService, {
+      maxComments: 0,
+      approveReviews: true,
+      approveConfidenceThreshold: 80,
+      minCommentSeverity: 'minor',
+    });
+
+    await service.performReview(1);
+
+    const submit = githubService.submitReview as jest.Mock;
+    expect(submit.mock.calls[0][1].suggestedAction).toBe('COMMENT');
+  });
+
+  it('does not approve when confidence is missing (treated as 0)', async () => {
+    const { githubService, diffService, aiProvider } = makeServices({
+      summary: 'sum',
+      suggestedAction: 'APPROVE',
+      // simulate a provider that omitted confidence
+      confidence: undefined as unknown as number,
+      lineComments: []
+    });
+
+    const service = new ReviewService(aiProvider, githubService, diffService, {
+      maxComments: 0,
+      approveReviews: true,
+      approveConfidenceThreshold: 80,
+      minCommentSeverity: 'minor',
+    });
+
+    await service.performReview(1);
+
+    const submit = githubService.submitReview as jest.Mock;
+    expect(submit.mock.calls[0][1].suggestedAction).toBe('COMMENT');
+  });
+
+  it('falls back to default threshold when input is NaN', async () => {
+    const { githubService, diffService, aiProvider } = makeServices({
+      summary: 'sum',
+      suggestedAction: 'APPROVE',
+      confidence: 90,
+      lineComments: []
+    });
+
+    const service = new ReviewService(aiProvider, githubService, diffService, {
+      maxComments: 0,
+      approveReviews: true,
+      approveConfidenceThreshold: NaN as unknown as number,
+      minCommentSeverity: 'minor',
+    });
+
+    await service.performReview(1);
+
+    const submit = githubService.submitReview as jest.Mock;
+    // 90 >= default 80 → APPROVE
+    expect(submit.mock.calls[0][1].suggestedAction).toBe('APPROVE');
+  });
+
+  it('approves when confidence meets threshold and no blocker', async () => {
+    const { githubService, diffService, aiProvider } = makeServices({
+      summary: 'sum',
+      suggestedAction: 'APPROVE',
+      confidence: 90,
+      lineComments: []
+    });
+
+    const service = new ReviewService(aiProvider, githubService, diffService, {
+      maxComments: 0,
+      approveReviews: true,
+      approveConfidenceThreshold: 80,
+      minCommentSeverity: 'minor',
+    });
+
+    await service.performReview(1);
+
+    const submit = githubService.submitReview as jest.Mock;
+    expect(submit.mock.calls[0][1].suggestedAction).toBe('APPROVE');
+  });
+
   it('keeps higher-severity comments when MAX_COMMENTS truncates', async () => {
     const { githubService, diffService, aiProvider } = makeServices({
       summary: 'sum',
