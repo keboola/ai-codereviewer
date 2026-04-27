@@ -36,12 +36,21 @@ inputs:
     required: false
     default: "minor"
   PROJECT_CONTEXT:
-    description: "Additional context about the project"
+    description: "Additional context about the project (inline string)."
+    required: false
+  PROJECT_CONTEXT_FILE:
+    description: "Path (in the PR head) to a file containing the project context. When set and present, takes precedence over PROJECT_CONTEXT. Skipped silently if missing."
     required: false
   INSTRUCTIONS_FILE:
-    description: "Path to a file in the PR head containing repository-specific reviewer instructions (Markdown). Skipped silently if missing."
+    description: "Path (in the PR head) to a Markdown file with repo-specific reviewer instructions. Skipped silently if missing. Combined with INSTRUCTIONS_URL when both are set (URL first as baseline, file appended as repo-specific override)."
     required: false
     default: ".github/ai-review.md"
+  INSTRUCTIONS_URL:
+    description: "URL to a Markdown file with shared reviewer instructions (e.g. raw.githubusercontent.com URL of a central org-wide config). Lets many repos share one source of truth without per-repo PRs."
+    required: false
+  INSTRUCTIONS_URL_TOKEN:
+    description: "Optional bearer token for INSTRUCTIONS_URL when the source requires authentication (private GitHub raw URLs, etc.). Sent as 'Authorization: Bearer <token>'."
+    required: false
   CONTEXT_FILES:
     description: "Files to include in review (comma-separated)"
     required: false

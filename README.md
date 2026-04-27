@@ -119,8 +119,11 @@ Regardless of mode, applying the `ai-review` label to any PR always triggers a f
 | `APPROVE_CONFIDENCE_THRESHOLD` | Minimum AI confidence (0-100) required to auto-approve. Below this, an `approve` verdict is downgraded to `comment`. Any surviving `blocker` comment forces `request_changes` regardless. | `80` |
 | `MAX_COMMENTS` | Maximum number of review comments | `0` |
 | `MIN_COMMENT_SEVERITY` | Drop comments below this severity. One of `blocker`, `major`, `minor`, `nit`. | `minor` |
-| `PROJECT_CONTEXT` | Project context for better reviews | `""` |
-| `INSTRUCTIONS_FILE` | Path (in the PR head) to a Markdown file with repo-specific reviewer instructions. Skipped silently if missing. | `.github/ai-review.md` |
+| `PROJECT_CONTEXT` | Project context for better reviews (inline string). | `""` |
+| `PROJECT_CONTEXT_FILE` | Path (in the PR head) to a file containing the project context. Takes precedence over `PROJECT_CONTEXT` when present. Skipped silently if missing. | `""` |
+| `INSTRUCTIONS_FILE` | Path (in the PR head) to a Markdown file with repo-specific reviewer instructions. Skipped silently if missing. Combined with `INSTRUCTIONS_URL` when both are set. | `.github/ai-review.md` |
+| `INSTRUCTIONS_URL` | URL to a Markdown file with shared reviewer instructions (typically a central org-wide config repo). One source of truth for many consumers. | `""` |
+| `INSTRUCTIONS_URL_TOKEN` | Optional bearer token for `INSTRUCTIONS_URL` when the source requires authentication (private GitHub raw URLs, etc.). | `""` |
 | `CONTEXT_FILES` | Files to include in review (comma-separated) | `"package.json,README.md"` |
 | `EXCLUDE_PATTERNS` | Files to exclude (glob patterns, comma-separated) | `"**/*.lock,**/*.json,**/*.md"` |
 
@@ -151,6 +154,95 @@ generic guidance when they conflict.
 > protected branches, or (b) point `INSTRUCTIONS_FILE` at a path that
 > only your team can modify (e.g., a file with a CODEOWNERS rule), or
 > (c) leave `INSTRUCTIONS_FILE` empty for fork PRs.
+
+### Sharing reviewer instructions across many repos
+
+If you maintain a fleet of repositories and want one source of truth for
+reviewer rules — without opening a PR in every repo every time the rules
+change — set `INSTRUCTIONS_URL` to a Markdown file in a central
+configuration repo. The action fetches it on every run, so changes
+propagate as soon as they are merged in the central repo.
+
+`INSTRUCTIONS_URL` and `INSTRUCTIONS_FILE` can both be set at the same
+time. The shared instructions act as the org-wide baseline and the local
+file is appended after as a per-repo override / extension. Either alone
+also works.
+
+#### Pattern A — Public central repo (simplest)
+
+1. Create a public repo, e.g. `your-org/ai-review-config`.
+2. Add `instructions/backend.md`:
+   ```markdown
+   # Backend review rules
+
+   - Treat any new SQL string built with concatenation as a `blocker`.
+   - Public API in `src/api/**` is versioned; flag breaking changes as `major`.
+   - Skip nits about import ordering — Prettier handles it.
+   ```
+3. In each consumer repo's workflow:
+   ```yaml
+   - uses: keboola/ai-code-reviewer@main
+     with:
+       INSTRUCTIONS_URL: "https://raw.githubusercontent.com/your-org/ai-review-config/main/instructions/backend.md"
+       INSTRUCTIONS_FILE: ".github/ai-review.md"  # optional repo-specific extras
+       # ...other inputs
+   ```
+
+No token needed. Updating a rule = one PR in the central repo, applied
+to every consumer on the next review.
+
+#### Pattern B — Private central repo
+
+If the rules cannot be public, you need a token with read access to the
+central repo. The default `${{ secrets.GITHUB_TOKEN }}` only sees the
+current repo, so you must provide one explicitly.
+
+**1. Create the token.** Pick one:
+
+- **Fine-grained Personal Access Token** (simplest)
+  - https://github.com/settings/personal-access-tokens/new
+  - "Repository access" → "Only select repositories" → pick your central instructions repo.
+  - "Repository permissions" → "Contents: Read-only".
+  - Save the generated `github_pat_…` value.
+
+- **GitHub App installation token** (better for orgs)
+  - Create a GitHub App in your org with `Contents: Read` repository permission.
+  - Install it on the central instructions repo only.
+  - At workflow time, mint an installation token (e.g. via
+    `actions/create-github-app-token@v1`) and pass that in.
+
+**2. Store the token as an organization secret** (so you set it once for
+hundreds of repos):
+
+- `Org Settings → Secrets and variables → Actions → New organization secret`
+- Name: `AI_REVIEW_INSTRUCTIONS_TOKEN`
+- Value: the token from step 1
+- "Repository access": *Private repositories* (or a curated list)
+
+**3. Reference it from each consumer workflow:**
+
+```yaml
+- uses: keboola/ai-code-reviewer@main
+  with:
+    INSTRUCTIONS_URL: "https://raw.githubusercontent.com/your-org/ai-review-config/main/instructions/backend.md"
+    INSTRUCTIONS_URL_TOKEN: ${{ secrets.AI_REVIEW_INSTRUCTIONS_TOKEN }}
+    INSTRUCTIONS_FILE: ".github/ai-review.md"  # optional
+    # ...other inputs
+```
+
+The token is sent as `Authorization: Bearer <token>`; raw GitHub URLs
+accept this for private content.
+
+> **Tip.** You can route different teams to different files in the same
+> central repo (`instructions/backend.md`, `instructions/frontend.md`,
+> `instructions/data.md`). Keep the workflow input wired to the right
+> path per consumer repo, or use a Composite Action that selects the
+> path based on a label.
+
+> **Security note for fork PRs.** Unlike `INSTRUCTIONS_FILE`,
+> `INSTRUCTIONS_URL` content is **not** controllable by a fork PR
+> author, so it is the safe place for rules you want enforced even on
+> external contributions.
 
 ### Supported Models
 

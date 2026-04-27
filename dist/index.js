@@ -63,7 +63,10 @@ async function main() {
         const maxComments = parseInt(core.getInput('MAX_COMMENTS') || '0', 10);
         const minCommentSeverity = (core.getInput('MIN_COMMENT_SEVERITY') || 'minor').toLowerCase();
         const projectContext = core.getInput('PROJECT_CONTEXT');
+        const projectContextFile = core.getInput('PROJECT_CONTEXT_FILE');
         const instructionsFile = core.getInput('INSTRUCTIONS_FILE');
+        const instructionsUrl = core.getInput('INSTRUCTIONS_URL');
+        const instructionsUrlToken = core.getInput('INSTRUCTIONS_URL_TOKEN');
         const contextFilesInput = core.getInput('CONTEXT_FILES');
         const contextFiles = contextFilesInput ? contextFilesInput.split(',').map(f => f.trim()).filter(Boolean) : [];
         const excludePatterns = core.getInput('EXCLUDE_PATTERNS');
@@ -82,8 +85,11 @@ async function main() {
             approveReviews,
             approveConfidenceThreshold,
             projectContext,
+            projectContextFile,
             contextFiles,
             instructionsFile,
+            instructionsUrl,
+            instructionsUrlToken,
             providerLabel: provider,
             modelLabel: model,
             minCommentSeverity: minCommentSeverity,
@@ -1324,8 +1330,11 @@ class ReviewService {
             approveReviews: config.approveReviews,
             approveConfidenceThreshold: threshold,
             projectContext: config.projectContext,
+            projectContextFile: config.projectContextFile,
             contextFiles: config.contextFiles || ['package.json', 'README.md'],
             instructionsFile: config.instructionsFile,
+            instructionsUrl: config.instructionsUrl,
+            instructionsUrlToken: config.instructionsUrlToken,
             providerLabel: config.providerLabel,
             modelLabel: config.modelLabel,
             minCommentSeverity: (_a = config.minCommentSeverity) !== null && _a !== void 0 ? _a : 'minor',
@@ -1376,7 +1385,7 @@ class ReviewService {
             context: {
                 repository: (_a = process.env.GITHUB_REPOSITORY) !== null && _a !== void 0 ? _a : '',
                 owner: (_b = process.env.GITHUB_REPOSITORY_OWNER) !== null && _b !== void 0 ? _b : '',
-                projectContext: this.config.projectContext,
+                projectContext: await this.getProjectContext(prDetails.head),
                 repoInstructions,
                 isUpdate,
             },
@@ -1472,6 +1481,14 @@ class ReviewService {
         return `${path} ${line} ${body.trim().replace(/\s+/g, ' ').toLowerCase()}`;
     }
     async getRepoInstructions(headRef) {
+        const shared = await this.fetchInstructionsUrl();
+        const local = await this.fetchInstructionsFile(headRef);
+        if (shared && local) {
+            return `${shared.trim()}\n\n---\n\n${local.trim()}`;
+        }
+        return shared || local;
+    }
+    async fetchInstructionsFile(headRef) {
         var _a;
         const path = (_a = this.config.instructionsFile) === null || _a === void 0 ? void 0 : _a.trim();
         if (!path)
@@ -1482,6 +1499,48 @@ class ReviewService {
             return content;
         }
         return undefined;
+    }
+    async fetchInstructionsUrl() {
+        var _a, _b;
+        const url = (_a = this.config.instructionsUrl) === null || _a === void 0 ? void 0 : _a.trim();
+        if (!url)
+            return undefined;
+        try {
+            const headers = {
+                'Accept': 'text/plain, text/markdown, */*',
+            };
+            const token = (_b = this.config.instructionsUrlToken) === null || _b === void 0 ? void 0 : _b.trim();
+            if (token) {
+                headers['Authorization'] = `Bearer ${token}`;
+            }
+            const res = await fetch(url, { headers });
+            if (!res.ok) {
+                core.warning(`INSTRUCTIONS_URL fetch failed (${res.status} ${res.statusText}); skipping shared instructions`);
+                return undefined;
+            }
+            const text = await res.text();
+            if (text.trim().length > 0) {
+                core.info(`Loaded shared reviewer instructions from ${url}`);
+                return text;
+            }
+        }
+        catch (error) {
+            core.warning(`INSTRUCTIONS_URL fetch error: ${error}; skipping shared instructions`);
+        }
+        return undefined;
+    }
+    async getProjectContext(headRef) {
+        var _a, _b;
+        const path = (_a = this.config.projectContextFile) === null || _a === void 0 ? void 0 : _a.trim();
+        if (path) {
+            const content = await this.githubService.getFileContent(path, headRef, { quiet: true });
+            if (content && content.trim().length > 0) {
+                core.info(`Loaded project context from ${path}`);
+                return content;
+            }
+        }
+        const inline = (_b = this.config.projectContext) === null || _b === void 0 ? void 0 : _b.trim();
+        return inline ? inline : undefined;
     }
     async getRepositoryContext() {
         const results = [];

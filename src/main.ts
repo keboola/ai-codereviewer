@@ -22,7 +22,10 @@ async function main() {
     const maxComments = parseInt(core.getInput('MAX_COMMENTS') || '0', 10);
     const minCommentSeverity = (core.getInput('MIN_COMMENT_SEVERITY') || 'minor').toLowerCase();
     const projectContext = core.getInput('PROJECT_CONTEXT');
+    const projectContextFile = core.getInput('PROJECT_CONTEXT_FILE');
     const instructionsFile = core.getInput('INSTRUCTIONS_FILE');
+    const instructionsUrl = core.getInput('INSTRUCTIONS_URL');
+    const instructionsUrlToken = core.getInput('INSTRUCTIONS_URL_TOKEN');
     const contextFilesInput = core.getInput('CONTEXT_FILES');
     const contextFiles = contextFilesInput ? contextFilesInput.split(',').map(f => f.trim()).filter(Boolean) : [];
     const excludePatterns = core.getInput('EXCLUDE_PATTERNS');
@@ -47,8 +50,11 @@ async function main() {
         approveReviews,
         approveConfidenceThreshold,
         projectContext,
+        projectContextFile,
         contextFiles,
         instructionsFile,
+        instructionsUrl,
+        instructionsUrlToken,
         providerLabel: provider,
         modelLabel: model,
         minCommentSeverity: minCommentSeverity as 'blocker' | 'major' | 'minor' | 'nit',
