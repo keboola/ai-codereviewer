@@ -18,6 +18,7 @@ export interface ReviewServiceConfig {
   approveConfidenceThreshold?: number;
   projectContext?: string;
   contextFiles?: string[];
+  instructionsFile?: string;
   providerLabel?: string;
   modelLabel?: string;
   minCommentSeverity?: CommentSeverity;
@@ -43,6 +44,7 @@ export class ReviewService {
       approveConfidenceThreshold: threshold,
       projectContext: config.projectContext,
       contextFiles: config.contextFiles || ['package.json', 'README.md'],
+      instructionsFile: config.instructionsFile,
       providerLabel: config.providerLabel,
       modelLabel: config.modelLabel,
       minCommentSeverity: config.minCommentSeverity ?? 'minor',
@@ -86,6 +88,7 @@ export class ReviewService {
 
     // Get repository context (now using configured files)
     const contextFiles = await this.getRepositoryContext();
+    const repoInstructions = await this.getRepoInstructions(prDetails.head);
 
     // Perform AI review
     const review = await this.aiProvider.review({
@@ -102,6 +105,7 @@ export class ReviewService {
         repository: process.env.GITHUB_REPOSITORY ?? '',
         owner: process.env.GITHUB_REPOSITORY_OWNER ?? '',
         projectContext: this.config.projectContext,
+        repoInstructions,
         isUpdate,
       },
     });
@@ -226,6 +230,18 @@ export class ReviewService {
 
   private commentKey(path: string, line: number, body: string): string {
     return `${path} ${line} ${body.trim().replace(/\s+/g, ' ').toLowerCase()}`;
+  }
+
+  private async getRepoInstructions(headRef: string): Promise<string | undefined> {
+    const path = this.config.instructionsFile?.trim();
+    if (!path) return undefined;
+
+    const content = await this.githubService.getFileContent(path, headRef, { quiet: true });
+    if (content && content.trim().length > 0) {
+      core.info(`Loaded repo-specific reviewer instructions from ${path}`);
+      return content;
+    }
+    return undefined;
   }
 
   private async getRepositoryContext(): Promise<Array<{path: string, content: string}>> {

@@ -62,9 +62,14 @@ export class AnthropicProvider implements AIProvider {
 
   private buildSystemPrompt(request: ReviewRequest): string {
     const isUpdate = request.context.isUpdate;
+    const repoInstructions = request.context.repoInstructions?.trim();
+    const repoBlock = repoInstructions
+      ? `\n\n------\nRepository-specific reviewer instructions (override the generic guidance above when they conflict):\n${repoInstructions}\n`
+      : '';
     return `
       ${baseCodeReviewPrompt}
       ${isUpdate ? updateReviewPrompt : ''}
+      ${repoBlock}
     `;
   }
 
