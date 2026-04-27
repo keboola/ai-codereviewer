@@ -17,8 +17,11 @@ export interface ReviewServiceConfig {
   approveReviews: boolean;
   approveConfidenceThreshold?: number;
   projectContext?: string;
+  projectContextFile?: string;
   contextFiles?: string[];
   instructionsFile?: string;
+  instructionsUrl?: string;
+  instructionsUrlToken?: string;
   providerLabel?: string;
   modelLabel?: string;
   minCommentSeverity?: CommentSeverity;
@@ -43,8 +46,11 @@ export class ReviewService {
       approveReviews: config.approveReviews,
       approveConfidenceThreshold: threshold,
       projectContext: config.projectContext,
+      projectContextFile: config.projectContextFile,
       contextFiles: config.contextFiles || ['package.json', 'README.md'],
       instructionsFile: config.instructionsFile,
+      instructionsUrl: config.instructionsUrl,
+      instructionsUrlToken: config.instructionsUrlToken,
       providerLabel: config.providerLabel,
       modelLabel: config.modelLabel,
       minCommentSeverity: config.minCommentSeverity ?? 'minor',
@@ -104,7 +110,7 @@ export class ReviewService {
       context: {
         repository: process.env.GITHUB_REPOSITORY ?? '',
         owner: process.env.GITHUB_REPOSITORY_OWNER ?? '',
-        projectContext: this.config.projectContext,
+        projectContext: await this.getProjectContext(prDetails.head),
         repoInstructions,
         isUpdate,
       },
@@ -233,6 +239,16 @@ export class ReviewService {
   }
 
   private async getRepoInstructions(headRef: string): Promise<string | undefined> {
+    const shared = await this.fetchInstructionsUrl();
+    const local = await this.fetchInstructionsFile(headRef);
+
+    if (shared && local) {
+      return `${shared.trim()}\n\n---\n\n${local.trim()}`;
+    }
+    return shared || local;
+  }
+
+  private async fetchInstructionsFile(headRef: string): Promise<string | undefined> {
     const path = this.config.instructionsFile?.trim();
     if (!path) return undefined;
 
@@ -242,6 +258,49 @@ export class ReviewService {
       return content;
     }
     return undefined;
+  }
+
+  private async fetchInstructionsUrl(): Promise<string | undefined> {
+    const url = this.config.instructionsUrl?.trim();
+    if (!url) return undefined;
+
+    try {
+      const headers: Record<string, string> = {
+        'Accept': 'text/plain, text/markdown, */*',
+      };
+      const token = this.config.instructionsUrlToken?.trim();
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+      const res = await fetch(url, { headers });
+      if (!res.ok) {
+        core.warning(
+          `INSTRUCTIONS_URL fetch failed (${res.status} ${res.statusText}); skipping shared instructions`
+        );
+        return undefined;
+      }
+      const text = await res.text();
+      if (text.trim().length > 0) {
+        core.info(`Loaded shared reviewer instructions from ${url}`);
+        return text;
+      }
+    } catch (error) {
+      core.warning(`INSTRUCTIONS_URL fetch error: ${error}; skipping shared instructions`);
+    }
+    return undefined;
+  }
+
+  private async getProjectContext(headRef: string): Promise<string | undefined> {
+    const path = this.config.projectContextFile?.trim();
+    if (path) {
+      const content = await this.githubService.getFileContent(path, headRef, { quiet: true });
+      if (content && content.trim().length > 0) {
+        core.info(`Loaded project context from ${path}`);
+        return content;
+      }
+    }
+    const inline = this.config.projectContext?.trim();
+    return inline ? inline : undefined;
   }
 
   private async getRepositoryContext(): Promise<Array<{path: string, content: string}>> {

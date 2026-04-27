@@ -36,6 +36,134 @@ function makeServices(aiResponse: ReviewResponse) {
 }
 
 describe('ReviewService', () => {
+  const originalFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it('combines INSTRUCTIONS_URL (shared) and INSTRUCTIONS_FILE (local) into the prompt', async () => {
+    const { githubService, diffService, aiProvider } = makeServices({
+      summary: 'sum', suggestedAction: 'COMMENT', confidence: 50, lineComments: []
+    });
+
+    (githubService.getFileContent as jest.Mock).mockImplementation(
+      async (path: string) => path === '.github/ai-review.md' ? 'Local: skip nits.' : 'content'
+    );
+
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      text: async () => 'Shared org-wide rule: SQL concat is a blocker.',
+    }) as any;
+
+    const service = new ReviewService(aiProvider as any, githubService, diffService, {
+      maxComments: 0,
+      approveReviews: true,
+      minCommentSeverity: 'minor',
+      instructionsFile: '.github/ai-review.md',
+      instructionsUrl: 'https://example.com/shared.md',
+    });
+
+    await service.performReview(1);
+
+    const merged = (aiProvider as StubAIProvider).lastRequest.context.repoInstructions;
+    expect(merged).toContain('Shared org-wide rule');
+    expect(merged).toContain('Local: skip nits.');
+    // Shared baseline appears before local override
+    expect(merged.indexOf('Shared org-wide rule')).toBeLessThan(merged.indexOf('Local: skip nits.'));
+  });
+
+  it('sends Authorization header when INSTRUCTIONS_URL_TOKEN is set', async () => {
+    const { githubService, diffService, aiProvider } = makeServices({
+      summary: 'sum', suggestedAction: 'COMMENT', confidence: 50, lineComments: []
+    });
+
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true, status: 200, statusText: 'OK', text: async () => 'Shared rules.'
+    });
+    global.fetch = fetchMock as any;
+
+    const service = new ReviewService(aiProvider as any, githubService, diffService, {
+      maxComments: 0,
+      approveReviews: true,
+      minCommentSeverity: 'minor',
+      instructionsUrl: 'https://example.com/private.md',
+      instructionsUrlToken: 'ghp_secret',
+    });
+
+    await service.performReview(1);
+
+    const init = fetchMock.mock.calls[0][1];
+    expect(init.headers['Authorization']).toBe('Bearer ghp_secret');
+  });
+
+  it('skips shared instructions silently when INSTRUCTIONS_URL fetch fails', async () => {
+    const { githubService, diffService, aiProvider } = makeServices({
+      summary: 'sum', suggestedAction: 'COMMENT', confidence: 50, lineComments: []
+    });
+
+    (githubService.getFileContent as jest.Mock).mockResolvedValue('');
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: false, status: 404, statusText: 'Not Found', text: async () => '',
+    }) as any;
+
+    const service = new ReviewService(aiProvider as any, githubService, diffService, {
+      maxComments: 0,
+      approveReviews: true,
+      minCommentSeverity: 'minor',
+      instructionsUrl: 'https://example.com/missing.md',
+    });
+
+    await service.performReview(1);
+
+    expect((aiProvider as StubAIProvider).lastRequest.context.repoInstructions).toBeUndefined();
+  });
+
+  it('PROJECT_CONTEXT_FILE takes precedence over inline PROJECT_CONTEXT when present', async () => {
+    const { githubService, diffService, aiProvider } = makeServices({
+      summary: 'sum', suggestedAction: 'COMMENT', confidence: 50, lineComments: []
+    });
+
+    (githubService.getFileContent as jest.Mock).mockImplementation(
+      async (path: string) => path === '.github/project-context.md' ? 'From file.' : 'content'
+    );
+
+    const service = new ReviewService(aiProvider as any, githubService, diffService, {
+      maxComments: 0,
+      approveReviews: true,
+      minCommentSeverity: 'minor',
+      projectContext: 'Inline context.',
+      projectContextFile: '.github/project-context.md',
+    });
+
+    await service.performReview(1);
+
+    expect((aiProvider as StubAIProvider).lastRequest.context.projectContext).toBe('From file.');
+  });
+
+  it('falls back to inline PROJECT_CONTEXT when PROJECT_CONTEXT_FILE is missing', async () => {
+    const { githubService, diffService, aiProvider } = makeServices({
+      summary: 'sum', suggestedAction: 'COMMENT', confidence: 50, lineComments: []
+    });
+
+    (githubService.getFileContent as jest.Mock).mockImplementation(
+      async (path: string) => path === '.github/project-context.md' ? '' : 'content'
+    );
+
+    const service = new ReviewService(aiProvider as any, githubService, diffService, {
+      maxComments: 0,
+      approveReviews: true,
+      minCommentSeverity: 'minor',
+      projectContext: 'Inline context.',
+      projectContextFile: '.github/project-context.md',
+    });
+
+    await service.performReview(1);
+
+    expect((aiProvider as StubAIProvider).lastRequest.context.projectContext).toBe('Inline context.');
+  });
+
   it('passes per-repo instructions from INSTRUCTIONS_FILE into the AI request', async () => {
     const { githubService, diffService, aiProvider } = makeServices({
       summary: 'sum',
