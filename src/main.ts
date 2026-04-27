@@ -22,6 +22,8 @@ async function main() {
     const approveConfidenceThreshold = parseInt(core.getInput('APPROVE_CONFIDENCE_THRESHOLD') || '80', 10);
     const maxComments = parseInt(core.getInput('MAX_COMMENTS') || '0', 10);
     const minCommentSeverity = (core.getInput('MIN_COMMENT_SEVERITY') || 'minor').toLowerCase();
+
+    validateInputs({ provider, minCommentSeverity });
     const projectContext = core.getInput('PROJECT_CONTEXT');
     const projectContextFile = core.getInput('PROJECT_CONTEXT_FILE');
     const instructionsFile = core.getInput('INSTRUCTIONS_FILE');
@@ -73,6 +75,18 @@ async function main() {
     
   } catch (error: unknown) {
     core.setFailed(`Action failed: ${(error as Error).message}`);
+  }
+}
+
+const VALID_PROVIDERS = ['openai', 'anthropic', 'google'] as const;
+const VALID_SEVERITIES = ['blocker', 'major', 'minor', 'nit'] as const;
+
+function validateInputs({ provider, minCommentSeverity }: { provider: string; minCommentSeverity: string }): void {
+  if (!VALID_PROVIDERS.includes(provider.toLowerCase() as typeof VALID_PROVIDERS[number])) {
+    throw new Error(`AI_PROVIDER must be one of [${VALID_PROVIDERS.join(', ')}]; got '${provider}'`);
+  }
+  if (!VALID_SEVERITIES.includes(minCommentSeverity as typeof VALID_SEVERITIES[number])) {
+    throw new Error(`MIN_COMMENT_SEVERITY must be one of [${VALID_SEVERITIES.join(', ')}]; got '${minCommentSeverity}'`);
   }
 }
 

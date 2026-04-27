@@ -1,6 +1,7 @@
 import { Octokit } from '@octokit/rest';
 import * as core from '@actions/core';
 import { ReviewResponse } from '../providers/AIProvider';
+import { withRetry } from '../utils/retry';
 
 export interface PRDetails {
   owner: string;
@@ -108,26 +109,32 @@ export class GitHubService {
     const event = suggestedAction.toUpperCase() as 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT';
 
     try {
-      await this.octokit.pulls.createReview({
-        owner: this.owner,
-        repo: this.repo,
-        pull_number: prNumber,
-        body: summary,
-        comments,
-        event,
-      });
+      await withRetry(
+        () => this.octokit.pulls.createReview({
+          owner: this.owner,
+          repo: this.repo,
+          pull_number: prNumber,
+          body: summary,
+          comments,
+          event,
+        }),
+        { label: 'pulls.createReview' }
+      );
     } catch (error) {
       core.warning(`Failed to submit review with comments: ${error}`);
       core.info('Retrying without line comments...');
 
-      await this.octokit.pulls.createReview({
-        owner: this.owner,
-        repo: this.repo,
-        pull_number: prNumber,
-        body: `${summary}\n\n> Note: Some line comments were omitted due to technical limitations.`,
-        comments: [],
-        event,
-      });
+      await withRetry(
+        () => this.octokit.pulls.createReview({
+          owner: this.owner,
+          repo: this.repo,
+          pull_number: prNumber,
+          body: `${summary}\n\n> Note: Some line comments were omitted due to technical limitations.`,
+          comments: [],
+          event,
+        }),
+        { label: 'pulls.createReview (no comments)' }
+      );
     }
   }
 

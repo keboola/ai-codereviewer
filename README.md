@@ -245,6 +245,16 @@ accept this for private content.
 > author, so it is the safe place for rules you want enforced even on
 > external contributions.
 
+### Token usage telemetry
+
+Every successful review writes a small token-usage table to the GitHub Actions **step summary** (visible at the bottom of the run page):
+
+| Provider | Model | Input | Cached input | Output | Total |
+|---|---|---|---|---|---|
+| anthropic | claude-sonnet-4-6 | 12,034 | 11,200 | 423 | 12,457 |
+
+When running on Anthropic with prompt caching enabled (default), `Cached input` will be 0 on the very first run and equal most of `Input` on subsequent runs within the cache window — that's the caching working. Same idea for OpenAI's automatic prefix caching, exposed via `prompt_tokens_details.cached_tokens`.
+
 ### Supported Models
 
 All models supported by the provider should be supported.
