@@ -32,6 +32,7 @@ async function main() {
     const contextFilesInput = core.getInput('CONTEXT_FILES');
     const contextFiles = contextFilesInput ? contextFilesInput.split(',').map(f => f.trim()).filter(Boolean) : [];
     const excludePatterns = core.getInput('EXCLUDE_PATTERNS');
+    const configFile = core.getInput('CONFIG_FILE');
 
     // Initialize services
     const aiProvider = getProvider(provider);
@@ -59,6 +60,7 @@ async function main() {
         instructionsFile,
         instructionsUrl,
         instructionsUrlToken,
+        configFile,
         providerLabel: provider,
         modelLabel: model,
         minCommentSeverity: minCommentSeverity as 'blocker' | 'major' | 'minor' | 'nit',

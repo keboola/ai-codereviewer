@@ -2,6 +2,7 @@ import { AIProvider } from '../providers/AIProvider';
 import { GitHubService } from '../services/GitHubService';
 import { DiffService } from '../services/DiffService';
 import { CommentSeverity, ReviewResponse, UsageReport } from '../providers/AIProvider';
+import { loadRepoConfig, RepoConfig } from './RepoConfigLoader';
 import { withRetry } from '../utils/retry';
 import * as core from '@actions/core';
 
@@ -23,6 +24,7 @@ export interface ReviewServiceConfig {
   instructionsFile?: string;
   instructionsUrl?: string;
   instructionsUrlToken?: string;
+  configFile?: string;
   providerLabel?: string;
   modelLabel?: string;
   minCommentSeverity?: CommentSeverity;
@@ -52,10 +54,21 @@ export class ReviewService {
       instructionsFile: config.instructionsFile,
       instructionsUrl: config.instructionsUrl,
       instructionsUrlToken: config.instructionsUrlToken,
+      configFile: config.configFile,
       providerLabel: config.providerLabel,
       modelLabel: config.modelLabel,
       minCommentSeverity: config.minCommentSeverity ?? 'minor',
     };
+  }
+
+  private applyRepoConfig(repo: RepoConfig): void {
+    if (repo.min_comment_severity !== undefined) this.config.minCommentSeverity = repo.min_comment_severity;
+    if (repo.approve_reviews !== undefined) this.config.approveReviews = repo.approve_reviews;
+    if (repo.approve_confidence_threshold !== undefined) this.config.approveConfidenceThreshold = repo.approve_confidence_threshold;
+    if (repo.max_comments !== undefined) this.config.maxComments = repo.max_comments;
+    if (repo.instructions_file !== undefined) this.config.instructionsFile = repo.instructions_file;
+    if (repo.project_context_file !== undefined) this.config.projectContextFile = repo.project_context_file;
+    if (repo.project_context !== undefined) this.config.projectContext = repo.project_context;
   }
 
   async performReview(prNumber: number): Promise<ReviewResponse> {
@@ -64,6 +77,15 @@ export class ReviewService {
     // Get PR details
     const prDetails = await this.githubService.getPRDetails(prNumber);
     core.info(`PR title: ${prDetails.title}`);
+
+    // Layer per-repo config (.github/ai-review.yml) on top of action inputs
+    // BEFORE we use any tunable to fetch / filter / decide. exclude_patterns
+    // is applied to DiffService below; the rest mutate this.config.
+    const repoConfig = await loadRepoConfig(this.githubService, this.config.configFile, prDetails.head);
+    this.applyRepoConfig(repoConfig);
+    if (repoConfig.exclude_patterns !== undefined) {
+      this.diffService.setExcludePatterns(repoConfig.exclude_patterns);
+    }
 
     // Get modified files from diff
     const lastReviewedCommit = await this.githubService.getLastReviewedCommit(prNumber);
