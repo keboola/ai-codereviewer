@@ -1,8 +1,41 @@
-import { GenerativeModel, GoogleGenerativeAI } from '@google/generative-ai';
+import { GenerativeModel, GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
 import { AIProvider, AIProviderConfig, ReviewRequest, ReviewResponse } from './AIProvider';
 import * as core from '@actions/core';
 import { jsonrepair } from 'jsonrepair'
 import { buildSystemPrompt } from '../prompts';
+
+const geminiResponseSchema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    summary: { type: SchemaType.STRING },
+    comments: {
+      type: SchemaType.ARRAY,
+      items: {
+        type: SchemaType.OBJECT,
+        properties: {
+          path: { type: SchemaType.STRING },
+          line: { type: SchemaType.INTEGER },
+          comment: { type: SchemaType.STRING },
+          severity: {
+            type: SchemaType.STRING,
+            enum: ['blocker', 'major', 'minor', 'nit'],
+          },
+          category: {
+            type: SchemaType.STRING,
+            enum: ['security', 'bug', 'performance', 'maintainability', 'style', 'docs', 'test', 'other'],
+          },
+        },
+        required: ['path', 'line', 'comment', 'severity', 'category'],
+      },
+    },
+    suggestedAction: {
+      type: SchemaType.STRING,
+      enum: ['approve', 'request_changes', 'comment'],
+    },
+    confidence: { type: SchemaType.NUMBER },
+  },
+  required: ['summary', 'comments', 'suggestedAction', 'confidence'],
+};
 
 export class GeminiProvider implements AIProvider {
   private config!: AIProviderConfig;
@@ -16,6 +49,7 @@ export class GeminiProvider implements AIProvider {
       model: this.config.model,
       generationConfig: {
         responseMimeType: 'application/json',
+        responseSchema: geminiResponseSchema as any,
       },
     });
   }

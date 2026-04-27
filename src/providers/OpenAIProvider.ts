@@ -2,7 +2,7 @@ import OpenAI from 'openai';
 import { jsonrepair } from 'jsonrepair';
 import { AIProvider, AIProviderConfig, ReviewRequest, ReviewResponse } from './AIProvider';
 import * as core from '@actions/core';
-import { buildSystemPrompt } from '../prompts';
+import { buildSystemPrompt, reviewResponseSchema } from '../prompts';
 
 export class OpenAIProvider implements AIProvider {
   private config!: AIProviderConfig;
@@ -34,7 +34,7 @@ export class OpenAIProvider implements AIProvider {
         },
       ],
       temperature: this.getTemperature(),
-      response_format: this.isO1Mini() ? { type: 'text' } : { type: 'json_object' },
+      response_format: this.responseFormat(),
     });
 
     core.debug(`Raw OpenAI response: ${JSON.stringify(response.choices[0].message.content, null, 2)}`);
@@ -98,6 +98,20 @@ export class OpenAIProvider implements AIProvider {
 
   private isO1Mini(): boolean {
     return this.config.model.includes('o1-mini');
+  }
+
+  private responseFormat(): OpenAI.Chat.Completions.ChatCompletionCreateParams['response_format'] {
+    if (this.isO1Mini()) {
+      return { type: 'text' };
+    }
+    return {
+      type: 'json_schema',
+      json_schema: {
+        name: 'CodeReviewResponse',
+        schema: reviewResponseSchema as Record<string, unknown>,
+        strict: true,
+      },
+    };
   }
 
   private getSystemPromptRole(): 'system' | 'user' {
