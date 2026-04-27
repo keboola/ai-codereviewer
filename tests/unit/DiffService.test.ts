@@ -48,10 +48,24 @@ index abc..def 100644
     expect(files.every(f => !f.path.endsWith('.md'))).toBeTruthy();
   });
 
-  it('should format diff correctly', async () => {
+  it('should format diff with right-side line numbers per line', async () => {
     const service = new DiffService('mock-github-token', '**/*.md,**/*.json');
     const files = await service.getRelevantFiles(mockPRDetails);
     expect(files[0].diff).toContain('@@ ');
-    expect(files[0].diff).toContain('+console.log("new line")');
+    // Added line "new line" is at right-side line 2; format is "<num>| <originalDiffLine>".
+    expect(files[0].diff).toMatch(/^\s+2\|\s\+console\.log\("new line"\);$/m);
+    // First context line is at right-side line 1.
+    expect(files[0].diff).toMatch(/^\s+1\|\s+console\.log\("test"\);$/m);
+  });
+
+  it('should expose RIGHT-side commentable line numbers including context', async () => {
+    const service = new DiffService('mock-github-token', '**/*.md,**/*.json');
+    const files = await service.getRelevantFiles(mockPRDetails);
+    const lines = files[0].validRightLines;
+    // @@ -1,3 +1,4 @@: context line 1 (right=1), added line 2 (right=2), context line 3 (right=3).
+    expect(lines.has(1)).toBe(true); // context above
+    expect(lines.has(2)).toBe(true); // added
+    expect(lines.has(3)).toBe(true); // context below
+    expect(lines.has(99)).toBe(false);
   });
 });

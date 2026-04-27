@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { jsonrepair } from 'jsonrepair';
 import { AIProvider, AIProviderConfig, ReviewRequest, ReviewResponse } from './AIProvider';
 import * as core from '@actions/core';
 import { baseCodeReviewPrompt, updateReviewPrompt } from '../prompts';
@@ -65,20 +66,37 @@ export class OpenAIProvider implements AIProvider {
   }
 
   private parseResponse(response: OpenAI.Chat.Completions.ChatCompletion): ReviewResponse {
-    let rawContent = response.choices[0].message.content ?? '{}';
-
-    if (rawContent.startsWith('```json')) {
-      rawContent = rawContent.slice(7, -3);
+    const rawContent = response.choices[0].message.content ?? '{}';
+    try {
+      const content = JSON.parse(jsonrepair(this.extractJson(rawContent)));
+      return {
+        summary: content.summary,
+        lineComments: content.comments,
+        suggestedAction: content.suggestedAction,
+        confidence: content.confidence,
+      };
+    } catch (error) {
+      core.error(`Failed to parse OpenAI response: ${error}`);
+      return {
+        summary: 'Failed to parse AI response',
+        lineComments: [],
+        suggestedAction: 'COMMENT',
+        confidence: 0,
+      };
     }
+  }
 
-    // Implement response parsing
-    const content = JSON.parse(rawContent);
-    return {
-      summary: content.summary,
-      lineComments: content.comments,
-      suggestedAction: content.suggestedAction,
-      confidence: content.confidence,
-    };
+  private extractJson(raw: string): string {
+    const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fenced) {
+      return fenced[1].trim();
+    }
+    const firstBrace = raw.indexOf('{');
+    const lastBrace = raw.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      return raw.slice(firstBrace, lastBrace + 1);
+    }
+    return raw;
   }
 
   private isO1Mini(): boolean {

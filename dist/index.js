@@ -78,7 +78,9 @@ async function main() {
             maxComments,
             approveReviews,
             projectContext,
-            contextFiles
+            contextFiles,
+            providerLabel: provider,
+            modelLabel: model,
         });
         // Get PR number from GitHub context
         const prNumber = getPRNumberFromContext();
@@ -150,9 +152,15 @@ DO NOT output the response inside markdown code block, just output the JSON obje
 
 ------
 Understanding the diff:
-- Lines starting with "-" (del) show code that was REMOVED
-- Lines starting with "+" (add) show code that was ADDED
-- Lines without prefix (normal) show unchanged context
+- Each file's "diff" property is a sequence of hunks. A hunk header looks like "@@ -oldStart,oldLen +newStart,newLen @@".
+- Each diff line inside a hunk is formatted as "<rightLine>| <originalDiffLine>", where:
+    * <rightLine> is the line number in the NEW file (right side) — use this exact value as the "line" in any comment.
+    * <originalDiffLine> begins with one of:
+        - "+" for ADDED lines
+        - " " for unchanged CONTEXT lines
+        - "-" for REMOVED lines
+- For removed lines, <rightLine> is "-" (a dash). Do NOT post comments on removed lines — they have no right-side line number.
+- Only post comments on ADDED ("+") or CONTEXT (" ") lines, using their "<rightLine>" value.
 
 ------
 For the "summary" field, use Markdown formatting and follow these guidelines:
@@ -269,9 +277,8 @@ For the "comments" field:
   * line: The line number in the file that the comment is about
   * comment: The comment text
 - Other rules for "comments" field:
-  * ONLY use line numbers that appear in the "diff" property of each file
-  * Extract the line number that appears after the prefix
-  * DO NOT use line number 0 or line numbers not present in the diff
+  * ONLY use right-side line numbers that appear before "|" in the diff (the "<rightLine>" value).
+  * DO NOT use line number 0, line numbers not present in the diff, or "-" lines (those are removed lines).
   * DO NOT comment on removed lines unless their removal creates a problem:
     ** Focus your review on:
       1. New code (lines with "+")
@@ -677,6 +684,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.OpenAIProvider = void 0;
 const openai_1 = __importDefault(__nccwpck_require__(2583));
+const jsonrepair_1 = __nccwpck_require__(2555);
 const core = __importStar(__nccwpck_require__(7484));
 const prompts_1 = __nccwpck_require__(9493);
 class OpenAIProvider {
@@ -732,18 +740,37 @@ class OpenAIProvider {
     }
     parseResponse(response) {
         var _a;
-        let rawContent = (_a = response.choices[0].message.content) !== null && _a !== void 0 ? _a : '{}';
-        if (rawContent.startsWith('```json')) {
-            rawContent = rawContent.slice(7, -3);
+        const rawContent = (_a = response.choices[0].message.content) !== null && _a !== void 0 ? _a : '{}';
+        try {
+            const content = JSON.parse((0, jsonrepair_1.jsonrepair)(this.extractJson(rawContent)));
+            return {
+                summary: content.summary,
+                lineComments: content.comments,
+                suggestedAction: content.suggestedAction,
+                confidence: content.confidence,
+            };
         }
-        // Implement response parsing
-        const content = JSON.parse(rawContent);
-        return {
-            summary: content.summary,
-            lineComments: content.comments,
-            suggestedAction: content.suggestedAction,
-            confidence: content.confidence,
-        };
+        catch (error) {
+            core.error(`Failed to parse OpenAI response: ${error}`);
+            return {
+                summary: 'Failed to parse AI response',
+                lineComments: [],
+                suggestedAction: 'COMMENT',
+                confidence: 0,
+            };
+        }
+    }
+    extractJson(raw) {
+        const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+        if (fenced) {
+            return fenced[1].trim();
+        }
+        const firstBrace = raw.indexOf('{');
+        const lastBrace = raw.lastIndexOf('}');
+        if (firstBrace !== -1 && lastBrace > firstBrace) {
+            return raw.slice(firstBrace, lastBrace + 1);
+        }
+        return raw;
     }
     isO1Mini() {
         return this.config.model.includes('o1-mini');
@@ -859,23 +886,40 @@ class DiffService {
             return ({
                 path: (_a = file.to) !== null && _a !== void 0 ? _a : '',
                 diff: this.formatDiff(file),
+                validRightLines: this.collectRightLines(file),
             });
         });
     }
     formatDiff(file) {
         return file.chunks
             .map(chunk => {
-            const changes = chunk.changes
-                .map(c => {
-                const lineNum = c.type === 'normal'
-                    ? `${c.ln1},${c.ln2}`
-                    : c.ln || '';
-                return `${c.type}${lineNum} ${c.content}`;
-            })
-                .join('\n');
-            return `@@ ${chunk.content} @@\n${changes}`;
+            const lines = chunk.changes.map(c => {
+                let lineNum;
+                if (c.type === 'add')
+                    lineNum = String(c.ln);
+                else if (c.type === 'normal')
+                    lineNum = String(c.ln2);
+                else
+                    lineNum = '-';
+                return `${lineNum.padStart(5)}| ${c.content}`;
+            });
+            return `@@ ${chunk.content} @@\n${lines.join('\n')}`;
         })
             .join('\n');
+    }
+    collectRightLines(file) {
+        const lines = new Set();
+        for (const chunk of file.chunks) {
+            for (const change of chunk.changes) {
+                if (change.type === 'add' && typeof change.ln === 'number') {
+                    lines.add(change.ln);
+                }
+                else if (change.type === 'normal' && typeof change.ln2 === 'number') {
+                    lines.add(change.ln2);
+                }
+            }
+        }
+        return lines;
     }
 }
 exports.DiffService = DiffService;
@@ -931,6 +975,22 @@ class GitHubService {
         this.octokit = new rest_1.Octokit({ auth: token });
         [this.owner, this.repo] = ((_a = process.env.GITHUB_REPOSITORY) !== null && _a !== void 0 ? _a : '/').split('/');
     }
+    async getBotLogin() {
+        if (!this.botLoginPromise) {
+            this.botLoginPromise = (async () => {
+                try {
+                    const { data } = await this.octokit.users.getAuthenticated();
+                    core.debug(`Authenticated as: ${data.login}`);
+                    return data.login;
+                }
+                catch (error) {
+                    core.warning(`Failed to resolve authenticated user, falling back to github-actions[bot]: ${error}`);
+                    return 'github-actions[bot]';
+                }
+            })();
+        }
+        return this.botLoginPromise;
+    }
     async getPRDetails(prNumber) {
         var _a;
         const { data: pr } = await this.octokit.pulls.get({
@@ -966,26 +1026,22 @@ class GitHubService {
             return '';
         }
     }
-    async submitReview(prNumber, review) {
+    async submitReview(prNumber, review, validRightLinesByPath) {
         const { summary, lineComments = [], suggestedAction } = review;
-        // Convert line comments to GitHub review comments format
-        const allComments = await Promise.all(lineComments.map(async (comment) => {
-            try {
-                return {
-                    path: comment.path,
-                    side: 'RIGHT', // For new file version
-                    line: comment.line, // The actual line number
-                    body: comment.comment
-                };
-            }
-            catch (error) {
-                core.warning(`Skipping comment for ${comment.path}:${comment.line} - ${error}`);
-                return null;
-            }
+        const { kept, dropped } = this.partitionComments(lineComments, validRightLinesByPath);
+        if (dropped.length > 0) {
+            core.warning(`Dropped ${dropped.length} comment(s) targeting lines outside the PR diff: ` +
+                dropped.map(c => `${c.path}:${c.line}`).join(', '));
+        }
+        const comments = kept.map(comment => ({
+            path: comment.path,
+            side: 'RIGHT',
+            line: comment.line,
+            body: comment.comment,
         }));
-        const comments = allComments.filter(comment => comment !== null);
         core.info(`Submitting review with ${comments.length} comments`);
         core.debug(`Review comments: ${JSON.stringify(comments, null, 2)}`);
+        const event = suggestedAction.toUpperCase();
         try {
             await this.octokit.pulls.createReview({
                 owner: this.owner,
@@ -993,24 +1049,41 @@ class GitHubService {
                 pull_number: prNumber,
                 body: summary,
                 comments,
-                event: suggestedAction.toUpperCase()
+                event,
             });
         }
         catch (error) {
             core.warning(`Failed to submit review with comments: ${error}`);
             core.info('Retrying without line comments...');
-            // Retry without comments
             await this.octokit.pulls.createReview({
                 owner: this.owner,
                 repo: this.repo,
                 pull_number: prNumber,
                 body: `${summary}\n\n> Note: Some line comments were omitted due to technical limitations.`,
                 comments: [],
-                event: suggestedAction.toUpperCase()
+                event,
             });
         }
     }
+    partitionComments(lineComments = [], validRightLinesByPath) {
+        if (!validRightLinesByPath) {
+            return { kept: lineComments, dropped: [] };
+        }
+        const kept = [];
+        const dropped = [];
+        for (const c of lineComments) {
+            const valid = validRightLinesByPath.get(c.path);
+            if (valid && valid.has(c.line)) {
+                kept.push(c);
+            }
+            else {
+                dropped.push(c);
+            }
+        }
+        return { kept, dropped };
+    }
     async getLastReviewSubmittedAt(prNumber) {
+        const botLogin = await this.getBotLogin();
         // Get the first page to check pagination info
         const firstResponse = await this.octokit.pulls.listReviews({
             owner: this.owner,
@@ -1025,7 +1098,7 @@ class GitHubService {
         if (!linkHeader) {
             const botReview = firstResponse.data
                 .reverse()
-                .find(review => { var _a; return ((_a = review.user) === null || _a === void 0 ? void 0 : _a.login) === 'github-actions[bot]'; });
+                .find(review => { var _a; return ((_a = review.user) === null || _a === void 0 ? void 0 : _a.login) === botLogin; });
             return (botReview === null || botReview === void 0 ? void 0 : botReview.submitted_at) || null;
         }
         // Get the last page number
@@ -1035,7 +1108,7 @@ class GitHubService {
         if (lastPage === 1) {
             const botReview = firstResponse.data
                 .reverse()
-                .find(review => { var _a; return ((_a = review.user) === null || _a === void 0 ? void 0 : _a.login) === 'github-actions[bot]'; });
+                .find(review => { var _a; return ((_a = review.user) === null || _a === void 0 ? void 0 : _a.login) === botLogin; });
             return (botReview === null || botReview === void 0 ? void 0 : botReview.submitted_at) || null;
         }
         // Multiple pages - start from the last page and move backward
@@ -1049,7 +1122,7 @@ class GitHubService {
             });
             const botReview = response.data
                 .reverse()
-                .find(review => { var _a; return ((_a = review.user) === null || _a === void 0 ? void 0 : _a.login) === 'github-actions[bot]'; });
+                .find(review => { var _a; return ((_a = review.user) === null || _a === void 0 ? void 0 : _a.login) === botLogin; });
             if (botReview === null || botReview === void 0 ? void 0 : botReview.submitted_at) {
                 return botReview.submitted_at;
             }
@@ -1057,7 +1130,7 @@ class GitHubService {
         // Check first page last since we're going backwards
         const botReview = firstResponse.data
             .reverse()
-            .find(review => { var _a; return ((_a = review.user) === null || _a === void 0 ? void 0 : _a.login) === 'github-actions[bot]'; });
+            .find(review => { var _a; return ((_a = review.user) === null || _a === void 0 ? void 0 : _a.login) === botLogin; });
         return (botReview === null || botReview === void 0 ? void 0 : botReview.submitted_at) || null;
     }
     async getLastReviewedCommit(prNumber) {
@@ -1102,7 +1175,8 @@ class GitHubService {
             page++;
         }
         // Filter to bot reviews
-        const botReviews = allReviews.filter(review => { var _a; return ((_a = review.user) === null || _a === void 0 ? void 0 : _a.login) === 'github-actions[bot]'; });
+        const botLogin = await this.getBotLogin();
+        const botReviews = allReviews.filter(review => { var _a; return ((_a = review.user) === null || _a === void 0 ? void 0 : _a.login) === botLogin; });
         core.debug(`Found ${botReviews.length} bot reviews`);
         const botReviewsWithComments = await Promise.all(botReviews.map(async (review) => {
             var _a;
@@ -1194,11 +1268,13 @@ class ReviewService {
             maxComments: config.maxComments || 0,
             approveReviews: config.approveReviews,
             projectContext: config.projectContext,
-            contextFiles: config.contextFiles || ['package.json', 'README.md']
+            contextFiles: config.contextFiles || ['package.json', 'README.md'],
+            providerLabel: config.providerLabel,
+            modelLabel: config.modelLabel,
         };
     }
     async performReview(prNumber) {
-        var _a, _b, _c, _d;
+        var _a, _b, _c, _d, _e;
         core.info(`Starting review for PR #${prNumber}`);
         // Get PR details
         const prDetails = await this.githubService.getPRDetails(prNumber);
@@ -1246,15 +1322,54 @@ class ReviewService {
             },
         });
         // Add model name to summary
-        const modelInfo = `_Code review performed by \`${((_c = process.env.INPUT_AI_PROVIDER) === null || _c === void 0 ? void 0 : _c.toUpperCase()) || 'AI'} - ${process.env.INPUT_AI_MODEL}\`._`;
+        const provider = ((_c = this.config.providerLabel) === null || _c === void 0 ? void 0 : _c.toUpperCase())
+            || ((_d = process.env.INPUT_AI_PROVIDER) === null || _d === void 0 ? void 0 : _d.toUpperCase())
+            || 'AI';
+        const model = this.config.modelLabel
+            || process.env.INPUT_AI_MODEL
+            || '';
+        const modelInfo = `_Code review performed by \`${provider}${model ? ` - ${model}` : ''}\`._`;
         review.summary = `${review.summary}\n\n------\n\n${modelInfo}`;
-        // Submit review
+        const dedupedComments = this.dedupeAgainstPrevious((_e = review.lineComments) !== null && _e !== void 0 ? _e : [], previousReviews);
+        const validLinesByPath = new Map(modifiedFiles.map(f => [f.path, f.validRightLines]));
+        const cappedComments = this.config.maxComments > 0
+            ? dedupedComments.slice(0, this.config.maxComments)
+            : dedupedComments;
         await this.githubService.submitReview(prNumber, {
             ...review,
-            lineComments: this.config.maxComments > 0 ? (_d = review.lineComments) === null || _d === void 0 ? void 0 : _d.slice(0, this.config.maxComments) : review.lineComments,
+            lineComments: cappedComments,
             suggestedAction: this.normalizeReviewEvent(review.suggestedAction),
-        });
+        }, validLinesByPath);
         return review;
+    }
+    dedupeAgainstPrevious(newComments, previousReviews) {
+        if (!previousReviews || previousReviews.length === 0) {
+            return newComments;
+        }
+        const seen = new Set();
+        for (const review of previousReviews) {
+            for (const c of review.lineComments) {
+                seen.add(this.commentKey(c.path, c.line, c.comment));
+            }
+        }
+        const kept = [];
+        let droppedCount = 0;
+        for (const c of newComments) {
+            const key = this.commentKey(c.path, c.line, c.comment);
+            if (seen.has(key)) {
+                droppedCount++;
+                continue;
+            }
+            seen.add(key);
+            kept.push(c);
+        }
+        if (droppedCount > 0) {
+            core.info(`Dropped ${droppedCount} duplicate comment(s) already posted in earlier reviews`);
+        }
+        return kept;
+    }
+    commentKey(path, line, body) {
+        return `${path} ${line} ${body.trim().replace(/\s+/g, ' ').toLowerCase()}`;
     }
     async getRepositoryContext() {
         const results = [];

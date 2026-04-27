@@ -16,10 +16,27 @@ export class GitHubService {
   private octokit: Octokit;
   private owner: string;
   private repo: string;
+  private botLoginPromise?: Promise<string>;
 
   constructor(token: string) {
     this.octokit = new Octokit({ auth: token });
     [this.owner, this.repo] = (process.env.GITHUB_REPOSITORY ?? '/').split('/');
+  }
+
+  async getBotLogin(): Promise<string> {
+    if (!this.botLoginPromise) {
+      this.botLoginPromise = (async () => {
+        try {
+          const { data } = await this.octokit.users.getAuthenticated();
+          core.debug(`Authenticated as: ${data.login}`);
+          return data.login;
+        } catch (error) {
+          core.warning(`Failed to resolve authenticated user, falling back to github-actions[bot]: ${error}`);
+          return 'github-actions[bot]';
+        }
+      })();
+    }
+    return this.botLoginPromise;
   }
 
   async getPRDetails(prNumber: number): Promise<PRDetails> {
@@ -59,28 +76,32 @@ export class GitHubService {
     }
   }
 
-  async submitReview(prNumber: number, review: ReviewResponse) {
+  async submitReview(
+    prNumber: number,
+    review: ReviewResponse,
+    validRightLinesByPath?: Map<string, Set<number>>
+  ) {
     const { summary, lineComments = [], suggestedAction } = review;
 
-    // Convert line comments to GitHub review comments format
-    const allComments = await Promise.all(lineComments.map(async comment => {
-      try {
-        return {
-          path: comment.path,
-          side: 'RIGHT', // For new file version
-          line: comment.line, // The actual line number
-          body: comment.comment
-        };
-      } catch (error) {
-        core.warning(`Skipping comment for ${comment.path}:${comment.line} - ${error}`);
-        return null;
-      }
-    }));
+    const { kept, dropped } = this.partitionComments(lineComments, validRightLinesByPath);
+    if (dropped.length > 0) {
+      core.warning(
+        `Dropped ${dropped.length} comment(s) targeting lines outside the PR diff: ` +
+        dropped.map(c => `${c.path}:${c.line}`).join(', ')
+      );
+    }
 
-    const comments = allComments.filter(comment => comment !== null);
+    const comments = kept.map(comment => ({
+      path: comment.path,
+      side: 'RIGHT' as const,
+      line: comment.line,
+      body: comment.comment,
+    }));
 
     core.info(`Submitting review with ${comments.length} comments`);
     core.debug(`Review comments: ${JSON.stringify(comments, null, 2)}`);
+
+    const event = suggestedAction.toUpperCase() as 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT';
 
     try {
       await this.octokit.pulls.createReview({
@@ -89,25 +110,45 @@ export class GitHubService {
         pull_number: prNumber,
         body: summary,
         comments,
-        event: suggestedAction.toUpperCase() as 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT'
+        event,
       });
     } catch (error) {
       core.warning(`Failed to submit review with comments: ${error}`);
       core.info('Retrying without line comments...');
-      
-      // Retry without comments
+
       await this.octokit.pulls.createReview({
         owner: this.owner,
         repo: this.repo,
         pull_number: prNumber,
         body: `${summary}\n\n> Note: Some line comments were omitted due to technical limitations.`,
         comments: [],
-        event: suggestedAction.toUpperCase() as 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT'
+        event,
       });
     }
   }
 
+  private partitionComments(
+    lineComments: ReviewResponse['lineComments'] = [],
+    validRightLinesByPath?: Map<string, Set<number>>
+  ) {
+    if (!validRightLinesByPath) {
+      return { kept: lineComments, dropped: [] as typeof lineComments };
+    }
+    const kept: typeof lineComments = [];
+    const dropped: typeof lineComments = [];
+    for (const c of lineComments) {
+      const valid = validRightLinesByPath.get(c.path);
+      if (valid && valid.has(c.line)) {
+        kept.push(c);
+      } else {
+        dropped.push(c);
+      }
+    }
+    return { kept, dropped };
+  }
+
   async getLastReviewSubmittedAt(prNumber: number): Promise<string | null> {
+    const botLogin = await this.getBotLogin();
     // Get the first page to check pagination info
     const firstResponse = await this.octokit.pulls.listReviews({
       owner: this.owner,
@@ -124,8 +165,8 @@ export class GitHubService {
     if (!linkHeader) {
       const botReview = firstResponse.data
         .reverse()
-        .find(review => review.user?.login === 'github-actions[bot]');
-      
+        .find(review => review.user?.login === botLogin);
+
       return botReview?.submitted_at || null;
     }
 
@@ -137,8 +178,8 @@ export class GitHubService {
     if (lastPage === 1) {
       const botReview = firstResponse.data
         .reverse()
-        .find(review => review.user?.login === 'github-actions[bot]');
-      
+        .find(review => review.user?.login === botLogin);
+
       return botReview?.submitted_at || null;
     }
 
@@ -154,7 +195,7 @@ export class GitHubService {
 
       const botReview = response.data
         .reverse()
-        .find(review => review.user?.login === 'github-actions[bot]');
+        .find(review => review.user?.login === botLogin);
 
       if (botReview?.submitted_at) {
         return botReview.submitted_at;
@@ -164,8 +205,8 @@ export class GitHubService {
     // Check first page last since we're going backwards
     const botReview = firstResponse.data
       .reverse()
-      .find(review => review.user?.login === 'github-actions[bot]');
-    
+      .find(review => review.user?.login === botLogin);
+
     return botReview?.submitted_at || null;
   }
 
@@ -224,7 +265,8 @@ export class GitHubService {
     }
 
     // Filter to bot reviews
-    const botReviews = allReviews.filter(review => review.user?.login === 'github-actions[bot]');
+    const botLogin = await this.getBotLogin();
+    const botReviews = allReviews.filter(review => review.user?.login === botLogin);
     core.debug(`Found ${botReviews.length} bot reviews`);
 
     const botReviewsWithComments = await Promise.all(

@@ -17,9 +17,15 @@ DO NOT output the response inside markdown code block, just output the JSON obje
 
 ------
 Understanding the diff:
-- Lines starting with "-" (del) show code that was REMOVED
-- Lines starting with "+" (add) show code that was ADDED
-- Lines without prefix (normal) show unchanged context
+- Each file's "diff" property is a sequence of hunks. A hunk header looks like "@@ -oldStart,oldLen +newStart,newLen @@".
+- Each diff line inside a hunk is formatted as "<rightLine>| <originalDiffLine>", where:
+    * <rightLine> is the line number in the NEW file (right side) — use this exact value as the "line" in any comment.
+    * <originalDiffLine> begins with one of:
+        - "+" for ADDED lines
+        - " " for unchanged CONTEXT lines
+        - "-" for REMOVED lines
+- For removed lines, <rightLine> is "-" (a dash). Do NOT post comments on removed lines — they have no right-side line number.
+- Only post comments on ADDED ("+") or CONTEXT (" ") lines, using their "<rightLine>" value.
 
 ------
 For the "summary" field, use Markdown formatting and follow these guidelines:
@@ -136,9 +142,8 @@ For the "comments" field:
   * line: The line number in the file that the comment is about
   * comment: The comment text
 - Other rules for "comments" field:
-  * ONLY use line numbers that appear in the "diff" property of each file
-  * Extract the line number that appears after the prefix
-  * DO NOT use line number 0 or line numbers not present in the diff
+  * ONLY use right-side line numbers that appear before "|" in the diff (the "<rightLine>" value).
+  * DO NOT use line number 0, line numbers not present in the diff, or "-" lines (those are removed lines).
   * DO NOT comment on removed lines unless their removal creates a problem:
     ** Focus your review on:
       1. New code (lines with "+")

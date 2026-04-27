@@ -43,7 +43,9 @@ async function main() {
         maxComments,
         approveReviews,
         projectContext,
-        contextFiles
+        contextFiles,
+        providerLabel: provider,
+        modelLabel: model,
       }
     );
 

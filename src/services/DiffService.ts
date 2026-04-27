@@ -3,6 +3,12 @@ import { minimatch } from 'minimatch';
 import * as core from '@actions/core';
 import { PRDetails } from './GitHubService';
 
+export interface RelevantFile {
+  path: string;
+  diff: string;
+  validRightLines: Set<number>;
+}
+
 export class DiffService {
   private excludePatterns: string[];
   private githubToken: string;
@@ -16,9 +22,9 @@ export class DiffService {
   }
 
   async getRelevantFiles(
-    prDetails: PRDetails, 
+    prDetails: PRDetails,
     lastReviewedCommit?: string | null
-  ): Promise<Array<{ path: string; diff: string }>> {
+  ): Promise<RelevantFile[]> {
     const baseUrl = `https://api.github.com/repos/${prDetails.owner}/${prDetails.repo}`;
     const diffUrl = lastReviewedCommit ? 
       `${baseUrl}/compare/${lastReviewedCommit}...${prDetails.head}` :
@@ -47,13 +53,13 @@ export class DiffService {
     return this.filterRelevantFiles(files);
   }
 
-  private filterRelevantFiles(files: File[]): Array<{ path: string; diff: string }> {
+  private filterRelevantFiles(files: File[]): RelevantFile[] {
     core.debug(`Excluding patterns: ${this.excludePatterns.join(', ')}`);
 
     return files
       .filter(file => {
         const filePath = file.to ?? '';
-        const shouldExclude = this.excludePatterns.some(pattern => 
+        const shouldExclude = this.excludePatterns.some(pattern =>
           minimatch(filePath, pattern, { matchBase: true, dot: true })
         );
 
@@ -69,22 +75,36 @@ export class DiffService {
       .map(file => ({
         path: file.to ?? '',
         diff: this.formatDiff(file),
+        validRightLines: this.collectRightLines(file),
       }));
   }
 
   private formatDiff(file: File): string {
     return file.chunks
       .map(chunk => {
-        const changes = chunk.changes
-          .map(c => {
-            const lineNum = c.type === 'normal' 
-              ? `${c.ln1},${c.ln2}`
-              : c.ln || '';
-            return `${c.type}${lineNum} ${c.content}`;
-          })
-          .join('\n');
-        return `@@ ${chunk.content} @@\n${changes}`;
+        const lines = chunk.changes.map(c => {
+          let lineNum: string;
+          if (c.type === 'add') lineNum = String(c.ln);
+          else if (c.type === 'normal') lineNum = String(c.ln2);
+          else lineNum = '-';
+          return `${lineNum.padStart(5)}| ${c.content}`;
+        });
+        return `@@ ${chunk.content} @@\n${lines.join('\n')}`;
       })
       .join('\n');
+  }
+
+  private collectRightLines(file: File): Set<number> {
+    const lines = new Set<number>();
+    for (const chunk of file.chunks) {
+      for (const change of chunk.changes) {
+        if (change.type === 'add' && typeof change.ln === 'number') {
+          lines.add(change.ln);
+        } else if (change.type === 'normal' && typeof change.ln2 === 'number') {
+          lines.add(change.ln2);
+        }
+      }
+    }
+    return lines;
   }
 }
