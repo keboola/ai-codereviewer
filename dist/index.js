@@ -59,8 +59,11 @@ async function main() {
         const temperature = parseFloat(core.getInput('AI_TEMPERATURE') || '0');
         // Get new configuration inputs
         const approveReviews = core.getBooleanInput('APPROVE_REVIEWS');
+        const approveConfidenceThreshold = parseInt(core.getInput('APPROVE_CONFIDENCE_THRESHOLD') || '80', 10);
         const maxComments = parseInt(core.getInput('MAX_COMMENTS') || '0', 10);
+        const minCommentSeverity = (core.getInput('MIN_COMMENT_SEVERITY') || 'minor').toLowerCase();
         const projectContext = core.getInput('PROJECT_CONTEXT');
+        const instructionsFile = core.getInput('INSTRUCTIONS_FILE');
         const contextFilesInput = core.getInput('CONTEXT_FILES');
         const contextFiles = contextFilesInput ? contextFilesInput.split(',').map(f => f.trim()).filter(Boolean) : [];
         const excludePatterns = core.getInput('EXCLUDE_PATTERNS');
@@ -77,10 +80,13 @@ async function main() {
         const reviewService = new ReviewService_1.ReviewService(aiProvider, githubService, diffService, {
             maxComments,
             approveReviews,
+            approveConfidenceThreshold,
             projectContext,
             contextFiles,
+            instructionsFile,
             providerLabel: provider,
             modelLabel: model,
+            minCommentSeverity: minCommentSeverity,
         });
         // Get PR number from GitHub context
         const prNumber = getPRNumberFromContext();
@@ -137,7 +143,15 @@ exports.updateReviewPrompt = exports.baseCodeReviewPrompt = exports.outputFormat
 exports.outputFormat = `
 {
   "summary": "",
-  "comments": [{"path": "file_path", "line": number, "comment": "comment text"}],
+  "comments": [
+    {
+      "path": "file_path",
+      "line": number,
+      "comment": "comment text",
+      "severity": "blocker|major|minor|nit",
+      "category": "security|bug|performance|maintainability|style|docs|test|other"
+    }
+  ],
   "suggestedAction": "approve|request_changes|comment",
   "confidence": number
 }
@@ -276,6 +290,12 @@ For the "comments" field:
   * path: The path to the file that the comment is about
   * line: The line number in the file that the comment is about
   * comment: The comment text
+  * severity: One of "blocker", "major", "minor", "nit"
+      - "blocker": will block merge — security vulnerability, data loss / corruption, broken core functionality, race condition or memory leak in a critical path, missing input validation on a sensitive operation, unauthorized-access risk
+      - "major": should be addressed before merge — likely bug, significant performance regression, incorrect error handling, broken contract, clearly missing test coverage for risky logic
+      - "minor": worth addressing — code smell, duplicated logic, unclear naming, non-critical lint or typing issue, small perf improvement
+      - "nit": stylistic / cosmetic — do NOT post unless explicitly asked by repo instructions
+  * category: One of "security", "bug", "performance", "maintainability", "style", "docs", "test", "other"
 - Other rules for "comments" field:
   * ONLY use right-side line numbers that appear before "|" in the diff (the "<rightLine>" value).
   * DO NOT use line number 0, line numbers not present in the diff, or "-" lines (those are removed lines).
@@ -450,10 +470,16 @@ class AnthropicProvider {
         });
     }
     buildSystemPrompt(request) {
+        var _a;
         const isUpdate = request.context.isUpdate;
+        const repoInstructions = (_a = request.context.repoInstructions) === null || _a === void 0 ? void 0 : _a.trim();
+        const repoBlock = repoInstructions
+            ? `\n\n------\nRepository-specific reviewer instructions (override the generic guidance above when they conflict):\n${repoInstructions}\n`
+            : '';
         return `
       ${prompts_1.baseCodeReviewPrompt}
       ${isUpdate ? prompts_1.updateReviewPrompt : ''}
+      ${repoBlock}
     `;
     }
     parseResponse(response) {
@@ -608,10 +634,16 @@ class GeminiProvider {
         });
     }
     buildSystemPrompt(request) {
+        var _a;
         const isUpdate = request.context.isUpdate;
+        const repoInstructions = (_a = request.context.repoInstructions) === null || _a === void 0 ? void 0 : _a.trim();
+        const repoBlock = repoInstructions
+            ? `\n\n------\nRepository-specific reviewer instructions (override the generic guidance above when they conflict):\n${repoInstructions}\n`
+            : '';
         return `
       ${prompts_1.baseCodeReviewPrompt}
       ${isUpdate ? prompts_1.updateReviewPrompt : ''}
+      ${repoBlock}
     `;
     }
     parseResponse(response) {
@@ -732,10 +764,16 @@ class OpenAIProvider {
         });
     }
     buildSystemPrompt(request) {
+        var _a;
         const isUpdate = request.context.isUpdate;
+        const repoInstructions = (_a = request.context.repoInstructions) === null || _a === void 0 ? void 0 : _a.trim();
+        const repoBlock = repoInstructions
+            ? `\n\n------\nRepository-specific reviewer instructions (override the generic guidance above when they conflict):\n${repoInstructions}\n`
+            : '';
         return `
       ${prompts_1.baseCodeReviewPrompt}
       ${isUpdate ? prompts_1.updateReviewPrompt : ''}
+      ${repoBlock}
     `;
     }
     parseResponse(response) {
@@ -1008,7 +1046,7 @@ class GitHubService {
             head: pr.head.sha,
         };
     }
-    async getFileContent(path, ref) {
+    async getFileContent(path, ref, opts) {
         try {
             const { data } = await this.octokit.repos.getContent({
                 owner: this.owner,
@@ -1022,7 +1060,12 @@ class GitHubService {
             throw new Error('Not a file');
         }
         catch (error) {
-            core.warning(`Failed to get content for ${path}: ${error}`);
+            if (opts === null || opts === void 0 ? void 0 : opts.quiet) {
+                core.debug(`File not found at ${path}: ${error}`);
+            }
+            else {
+                core.warning(`Failed to get content for ${path}: ${error}`);
+            }
             return '';
         }
     }
@@ -1259,18 +1302,33 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.ReviewService = void 0;
 const core = __importStar(__nccwpck_require__(7484));
+const SEVERITY_ORDER = ['nit', 'minor', 'major', 'blocker'];
+function severityRank(s) {
+    if (!s)
+        return SEVERITY_ORDER.indexOf('minor');
+    const idx = SEVERITY_ORDER.indexOf(s);
+    return idx === -1 ? SEVERITY_ORDER.indexOf('minor') : idx;
+}
 class ReviewService {
     constructor(aiProvider, githubService, diffService, config) {
+        var _a;
         this.aiProvider = aiProvider;
         this.githubService = githubService;
         this.diffService = diffService;
+        const rawThreshold = config.approveConfidenceThreshold;
+        const threshold = (typeof rawThreshold === 'number' && Number.isFinite(rawThreshold))
+            ? rawThreshold
+            : 80;
         this.config = {
             maxComments: config.maxComments || 0,
             approveReviews: config.approveReviews,
+            approveConfidenceThreshold: threshold,
             projectContext: config.projectContext,
             contextFiles: config.contextFiles || ['package.json', 'README.md'],
+            instructionsFile: config.instructionsFile,
             providerLabel: config.providerLabel,
             modelLabel: config.modelLabel,
+            minCommentSeverity: (_a = config.minCommentSeverity) !== null && _a !== void 0 ? _a : 'minor',
         };
     }
     async performReview(prNumber) {
@@ -1303,6 +1361,7 @@ class ReviewService {
         }));
         // Get repository context (now using configured files)
         const contextFiles = await this.getRepositoryContext();
+        const repoInstructions = await this.getRepoInstructions(prDetails.head);
         // Perform AI review
         const review = await this.aiProvider.review({
             files: filesWithContent,
@@ -1318,6 +1377,7 @@ class ReviewService {
                 repository: (_a = process.env.GITHUB_REPOSITORY) !== null && _a !== void 0 ? _a : '',
                 owner: (_b = process.env.GITHUB_REPOSITORY_OWNER) !== null && _b !== void 0 ? _b : '',
                 projectContext: this.config.projectContext,
+                repoInstructions,
                 isUpdate,
             },
         });
@@ -1330,17 +1390,57 @@ class ReviewService {
             || '';
         const modelInfo = `_Code review performed by \`${provider}${model ? ` - ${model}` : ''}\`._`;
         review.summary = `${review.summary}\n\n------\n\n${modelInfo}`;
-        const dedupedComments = this.dedupeAgainstPrevious((_e = review.lineComments) !== null && _e !== void 0 ? _e : [], previousReviews);
         const validLinesByPath = new Map(modifiedFiles.map(f => [f.path, f.validRightLines]));
+        const filteredBySeverity = this.filterBySeverity((_e = review.lineComments) !== null && _e !== void 0 ? _e : []);
+        const dedupedComments = this.dedupeAgainstPrevious(filteredBySeverity, previousReviews);
+        const validatedComments = this.dropInvalidLines(dedupedComments, validLinesByPath);
+        const sortedComments = this.sortBySeverityDesc(validatedComments);
         const cappedComments = this.config.maxComments > 0
-            ? dedupedComments.slice(0, this.config.maxComments)
-            : dedupedComments;
+            ? sortedComments.slice(0, this.config.maxComments)
+            : sortedComments;
+        const hasBlocker = cappedComments.some(c => c.severity === 'blocker');
         await this.githubService.submitReview(prNumber, {
             ...review,
             lineComments: cappedComments,
-            suggestedAction: this.normalizeReviewEvent(review.suggestedAction),
+            suggestedAction: this.normalizeReviewEvent(review.suggestedAction, {
+                hasBlocker,
+                confidence: review.confidence,
+            }),
         }, validLinesByPath);
         return review;
+    }
+    dropInvalidLines(comments, validLinesByPath) {
+        const kept = [];
+        let dropped = 0;
+        for (const c of comments) {
+            const valid = validLinesByPath.get(c.path);
+            if (valid && valid.has(c.line)) {
+                kept.push(c);
+            }
+            else {
+                dropped++;
+                if (c.severity === 'blocker') {
+                    core.warning(`Blocker comment dropped because line is outside the diff: ${c.path}:${c.line}`);
+                }
+            }
+        }
+        if (dropped > 0) {
+            core.info(`Dropped ${dropped} comment(s) targeting lines outside the PR diff`);
+        }
+        return kept;
+    }
+    filterBySeverity(comments) {
+        const min = severityRank(this.config.minCommentSeverity);
+        const before = comments.length;
+        const kept = comments.filter(c => severityRank(c.severity) >= min);
+        const dropped = before - kept.length;
+        if (dropped > 0) {
+            core.info(`Dropped ${dropped} comment(s) below MIN_COMMENT_SEVERITY=${this.config.minCommentSeverity}`);
+        }
+        return kept;
+    }
+    sortBySeverityDesc(comments) {
+        return [...comments].sort((a, b) => severityRank(b.severity) - severityRank(a.severity));
     }
     dedupeAgainstPrevious(newComments, previousReviews) {
         if (!previousReviews || previousReviews.length === 0) {
@@ -1369,7 +1469,19 @@ class ReviewService {
         return kept;
     }
     commentKey(path, line, body) {
-        return `${path} ${line} ${body.trim().replace(/\s+/g, ' ').toLowerCase()}`;
+        return `${path} ${line} ${body.trim().replace(/\s+/g, ' ').toLowerCase()}`;
+    }
+    async getRepoInstructions(headRef) {
+        var _a;
+        const path = (_a = this.config.instructionsFile) === null || _a === void 0 ? void 0 : _a.trim();
+        if (!path)
+            return undefined;
+        const content = await this.githubService.getFileContent(path, headRef, { quiet: true });
+        if (content && content.trim().length > 0) {
+            core.info(`Loaded repo-specific reviewer instructions from ${path}`);
+            return content;
+        }
+        return undefined;
     }
     async getRepositoryContext() {
         const results = [];
@@ -1386,16 +1498,30 @@ class ReviewService {
         }
         return results;
     }
-    normalizeReviewEvent(action) {
-        if (!action || !this.config.approveReviews) {
+    normalizeReviewEvent(action, signals) {
+        var _a;
+        if (signals.hasBlocker) {
+            return 'REQUEST_CHANGES';
+        }
+        if (!this.config.approveReviews) {
             return 'COMMENT';
         }
-        const eventMap = {
-            'approve': 'APPROVE',
-            'request_changes': 'REQUEST_CHANGES',
-            'comment': 'COMMENT',
-        };
-        return eventMap[action.toLowerCase()] || 'COMMENT';
+        const normalized = (action || '').toLowerCase();
+        const threshold = (_a = this.config.approveConfidenceThreshold) !== null && _a !== void 0 ? _a : 80;
+        const confidence = (typeof signals.confidence === 'number' && Number.isFinite(signals.confidence))
+            ? signals.confidence
+            : 0;
+        if (normalized === 'approve') {
+            if (confidence >= threshold) {
+                return 'APPROVE';
+            }
+            core.info(`Downgrading approve to comment: confidence ${confidence} < threshold ${threshold}`);
+            return 'COMMENT';
+        }
+        if (normalized === 'request_changes') {
+            return 'REQUEST_CHANGES';
+        }
+        return 'COMMENT';
     }
 }
 exports.ReviewService = ReviewService;

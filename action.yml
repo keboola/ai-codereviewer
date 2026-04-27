@@ -23,13 +23,25 @@ inputs:
     description: "Whether to approve/reject PRs automatically"
     required: false
     default: "true"
+  APPROVE_CONFIDENCE_THRESHOLD:
+    description: "Minimum AI confidence (0-100) required to auto-approve. Below this, an 'approve' verdict is downgraded to 'comment'."
+    required: false
+    default: "80"
   MAX_COMMENTS:
     description: "Maximum number of review comments"
     required: false
     default: "0"
+  MIN_COMMENT_SEVERITY:
+    description: "Minimum severity to keep (blocker, major, minor, nit)"
+    required: false
+    default: "minor"
   PROJECT_CONTEXT:
     description: "Additional context about the project"
     required: false
+  INSTRUCTIONS_FILE:
+    description: "Path to a file in the PR head containing repository-specific reviewer instructions (Markdown). Skipped silently if missing."
+    required: false
+    default: ".github/ai-review.md"
   CONTEXT_FILES:
     description: "Files to include in review (comma-separated)"
     required: false

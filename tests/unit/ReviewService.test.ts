@@ -1,0 +1,289 @@
+import { ReviewService } from '../../src/services/ReviewService';
+import { GitHubService } from '../../src/services/GitHubService';
+import { DiffService } from '../../src/services/DiffService';
+import { AIProvider, ReviewResponse } from '../../src/providers/AIProvider';
+
+class StubAIProvider implements AIProvider {
+  public lastRequest: any;
+  constructor(private response: ReviewResponse) {}
+  async initialize(): Promise<void> {}
+  async review(req: any): Promise<ReviewResponse> {
+    this.lastRequest = req;
+    return this.response;
+  }
+}
+
+function makeServices(aiResponse: ReviewResponse) {
+  const githubService = {
+    getPRDetails: jest.fn().mockResolvedValue({
+      owner: 'o', repo: 'r', number: 1,
+      title: 't', description: 'd', base: 'B', head: 'H'
+    }),
+    getLastReviewedCommit: jest.fn().mockResolvedValue(null),
+    getPreviousReviews: jest.fn().mockResolvedValue([]),
+    getFileContent: jest.fn().mockResolvedValue('content'),
+    submitReview: jest.fn().mockResolvedValue(undefined),
+  } as unknown as GitHubService;
+
+  const diffService = {
+    getRelevantFiles: jest.fn().mockResolvedValue([
+      { path: 'src/a.ts', diff: '@@', validRightLines: new Set([1, 2, 3]) }
+    ])
+  } as unknown as DiffService;
+
+  const aiProvider = new StubAIProvider(aiResponse);
+  return { githubService, diffService, aiProvider };
+}
+
+describe('ReviewService', () => {
+  it('passes per-repo instructions from INSTRUCTIONS_FILE into the AI request', async () => {
+    const { githubService, diffService, aiProvider } = makeServices({
+      summary: 'sum',
+      suggestedAction: 'COMMENT',
+      confidence: 50,
+      lineComments: []
+    });
+
+    (githubService.getFileContent as jest.Mock).mockImplementation(
+      async (path: string) => path === '.github/ai-review.md' ? 'Be strict about SQL injection.' : 'content'
+    );
+
+    const service = new ReviewService(aiProvider as any, githubService, diffService, {
+      maxComments: 0,
+      approveReviews: true,
+      minCommentSeverity: 'minor',
+      instructionsFile: '.github/ai-review.md',
+    });
+
+    await service.performReview(1);
+
+    expect((aiProvider as StubAIProvider).lastRequest.context.repoInstructions)
+      .toContain('Be strict about SQL injection.');
+  });
+
+  it('skips repo instructions silently when the file is missing', async () => {
+    const { githubService, diffService, aiProvider } = makeServices({
+      summary: 'sum',
+      suggestedAction: 'COMMENT',
+      confidence: 50,
+      lineComments: []
+    });
+
+    (githubService.getFileContent as jest.Mock).mockImplementation(
+      async () => '' // empty content emulates "missing file"
+    );
+
+    const service = new ReviewService(aiProvider as any, githubService, diffService, {
+      maxComments: 0,
+      approveReviews: true,
+      minCommentSeverity: 'minor',
+      instructionsFile: '.github/ai-review.md',
+    });
+
+    await service.performReview(1);
+
+    expect((aiProvider as StubAIProvider).lastRequest.context.repoInstructions).toBeUndefined();
+  });
+
+  it('drops comments below MIN_COMMENT_SEVERITY', async () => {
+    const { githubService, diffService, aiProvider } = makeServices({
+      summary: 'sum',
+      suggestedAction: 'COMMENT',
+      confidence: 50,
+      lineComments: [
+        { path: 'src/a.ts', line: 1, comment: 'nit comment', severity: 'nit' },
+        { path: 'src/a.ts', line: 2, comment: 'minor issue', severity: 'minor' },
+        { path: 'src/a.ts', line: 3, comment: 'big issue', severity: 'major' },
+      ]
+    });
+
+    const service = new ReviewService(aiProvider, githubService, diffService, {
+      maxComments: 0,
+      approveReviews: true,
+      minCommentSeverity: 'major',
+    });
+
+    await service.performReview(1);
+
+    const submit = githubService.submitReview as jest.Mock;
+    const submittedComments = submit.mock.calls[0][1].lineComments;
+    expect(submittedComments.map((c: any) => c.severity)).toEqual(['major']);
+  });
+
+  it('does not escalate when the only blocker is on a line outside the diff', async () => {
+    const { githubService, diffService, aiProvider } = makeServices({
+      summary: 'sum',
+      suggestedAction: 'COMMENT',
+      confidence: 50,
+      lineComments: [
+        { path: 'src/a.ts', line: 999, comment: 'blocker on bad line', severity: 'blocker', category: 'security' },
+      ]
+    });
+
+    const service = new ReviewService(aiProvider, githubService, diffService, {
+      maxComments: 0,
+      approveReviews: true,
+      minCommentSeverity: 'minor',
+    });
+
+    await service.performReview(1);
+
+    const submit = githubService.submitReview as jest.Mock;
+    expect(submit.mock.calls[0][1].suggestedAction).toBe('COMMENT');
+    expect(submit.mock.calls[0][1].lineComments).toHaveLength(0);
+  });
+
+  it('forces REQUEST_CHANGES when any blocker survives, even if AI said approve', async () => {
+    const { githubService, diffService, aiProvider } = makeServices({
+      summary: 'sum',
+      suggestedAction: 'APPROVE',
+      confidence: 99,
+      lineComments: [
+        { path: 'src/a.ts', line: 1, comment: 'sql injection', severity: 'blocker', category: 'security' },
+      ]
+    });
+
+    const service = new ReviewService(aiProvider, githubService, diffService, {
+      maxComments: 0,
+      approveReviews: true,
+      minCommentSeverity: 'minor',
+    });
+
+    await service.performReview(1);
+
+    const submit = githubService.submitReview as jest.Mock;
+    expect(submit.mock.calls[0][1].suggestedAction).toBe('REQUEST_CHANGES');
+  });
+
+  it('downgrades to COMMENT when approveReviews is false and there is no blocker', async () => {
+    const { githubService, diffService, aiProvider } = makeServices({
+      summary: 'sum',
+      suggestedAction: 'APPROVE',
+      confidence: 99,
+      lineComments: []
+    });
+
+    const service = new ReviewService(aiProvider, githubService, diffService, {
+      maxComments: 0,
+      approveReviews: false,
+      minCommentSeverity: 'minor',
+    });
+
+    await service.performReview(1);
+
+    const submit = githubService.submitReview as jest.Mock;
+    expect(submit.mock.calls[0][1].suggestedAction).toBe('COMMENT');
+  });
+
+  it('downgrades approve to comment when confidence is below threshold', async () => {
+    const { githubService, diffService, aiProvider } = makeServices({
+      summary: 'sum',
+      suggestedAction: 'APPROVE',
+      confidence: 60,
+      lineComments: []
+    });
+
+    const service = new ReviewService(aiProvider, githubService, diffService, {
+      maxComments: 0,
+      approveReviews: true,
+      approveConfidenceThreshold: 80,
+      minCommentSeverity: 'minor',
+    });
+
+    await service.performReview(1);
+
+    const submit = githubService.submitReview as jest.Mock;
+    expect(submit.mock.calls[0][1].suggestedAction).toBe('COMMENT');
+  });
+
+  it('does not approve when confidence is missing (treated as 0)', async () => {
+    const { githubService, diffService, aiProvider } = makeServices({
+      summary: 'sum',
+      suggestedAction: 'APPROVE',
+      // simulate a provider that omitted confidence
+      confidence: undefined as unknown as number,
+      lineComments: []
+    });
+
+    const service = new ReviewService(aiProvider, githubService, diffService, {
+      maxComments: 0,
+      approveReviews: true,
+      approveConfidenceThreshold: 80,
+      minCommentSeverity: 'minor',
+    });
+
+    await service.performReview(1);
+
+    const submit = githubService.submitReview as jest.Mock;
+    expect(submit.mock.calls[0][1].suggestedAction).toBe('COMMENT');
+  });
+
+  it('falls back to default threshold when input is NaN', async () => {
+    const { githubService, diffService, aiProvider } = makeServices({
+      summary: 'sum',
+      suggestedAction: 'APPROVE',
+      confidence: 90,
+      lineComments: []
+    });
+
+    const service = new ReviewService(aiProvider, githubService, diffService, {
+      maxComments: 0,
+      approveReviews: true,
+      approveConfidenceThreshold: NaN as unknown as number,
+      minCommentSeverity: 'minor',
+    });
+
+    await service.performReview(1);
+
+    const submit = githubService.submitReview as jest.Mock;
+    // 90 >= default 80 → APPROVE
+    expect(submit.mock.calls[0][1].suggestedAction).toBe('APPROVE');
+  });
+
+  it('approves when confidence meets threshold and no blocker', async () => {
+    const { githubService, diffService, aiProvider } = makeServices({
+      summary: 'sum',
+      suggestedAction: 'APPROVE',
+      confidence: 90,
+      lineComments: []
+    });
+
+    const service = new ReviewService(aiProvider, githubService, diffService, {
+      maxComments: 0,
+      approveReviews: true,
+      approveConfidenceThreshold: 80,
+      minCommentSeverity: 'minor',
+    });
+
+    await service.performReview(1);
+
+    const submit = githubService.submitReview as jest.Mock;
+    expect(submit.mock.calls[0][1].suggestedAction).toBe('APPROVE');
+  });
+
+  it('keeps higher-severity comments when MAX_COMMENTS truncates', async () => {
+    const { githubService, diffService, aiProvider } = makeServices({
+      summary: 'sum',
+      suggestedAction: 'COMMENT',
+      confidence: 50,
+      lineComments: [
+        { path: 'src/a.ts', line: 1, comment: 'a', severity: 'minor' },
+        { path: 'src/a.ts', line: 2, comment: 'b', severity: 'major' },
+        { path: 'src/a.ts', line: 3, comment: 'c', severity: 'minor' },
+      ]
+    });
+
+    const service = new ReviewService(aiProvider, githubService, diffService, {
+      maxComments: 1,
+      approveReviews: true,
+      minCommentSeverity: 'minor',
+    });
+
+    await service.performReview(1);
+
+    const submit = githubService.submitReview as jest.Mock;
+    const submitted = submit.mock.calls[0][1].lineComments;
+    expect(submitted).toHaveLength(1);
+    expect(submitted[0].severity).toBe('major');
+  });
+});

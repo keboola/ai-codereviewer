@@ -18,8 +18,11 @@ async function main() {
 
     // Get new configuration inputs
     const approveReviews = core.getBooleanInput('APPROVE_REVIEWS');
+    const approveConfidenceThreshold = parseInt(core.getInput('APPROVE_CONFIDENCE_THRESHOLD') || '80', 10);
     const maxComments = parseInt(core.getInput('MAX_COMMENTS') || '0', 10);
+    const minCommentSeverity = (core.getInput('MIN_COMMENT_SEVERITY') || 'minor').toLowerCase();
     const projectContext = core.getInput('PROJECT_CONTEXT');
+    const instructionsFile = core.getInput('INSTRUCTIONS_FILE');
     const contextFilesInput = core.getInput('CONTEXT_FILES');
     const contextFiles = contextFilesInput ? contextFilesInput.split(',').map(f => f.trim()).filter(Boolean) : [];
     const excludePatterns = core.getInput('EXCLUDE_PATTERNS');
@@ -42,10 +45,13 @@ async function main() {
       {
         maxComments,
         approveReviews,
+        approveConfidenceThreshold,
         projectContext,
         contextFiles,
+        instructionsFile,
         providerLabel: provider,
         modelLabel: model,
+        minCommentSeverity: minCommentSeverity as 'blocker' | 'major' | 'minor' | 'nit',
       }
     );
 
