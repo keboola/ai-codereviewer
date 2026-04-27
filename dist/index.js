@@ -141,6 +141,39 @@ main().catch(error => {
 
 /***/ }),
 
+/***/ 3278:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.buildSystemPrompt = buildSystemPrompt;
+const code_reviews_1 = __nccwpck_require__(264);
+/**
+ * Stitch together the system prompt sent to every provider:
+ *   1. Base reviewer instructions (always)
+ *   2. Update-flow guidance (only when the PR has prior bot reviews)
+ *   3. Repository-specific instructions (when configured)
+ *
+ * Repo-specific instructions go last so they can override generic guidance
+ * when the two conflict.
+ */
+function buildSystemPrompt(request) {
+    var _a;
+    const sections = [code_reviews_1.baseCodeReviewPrompt];
+    if (request.context.isUpdate) {
+        sections.push(code_reviews_1.updateReviewPrompt);
+    }
+    const repoInstructions = (_a = request.context.repoInstructions) === null || _a === void 0 ? void 0 : _a.trim();
+    if (repoInstructions) {
+        sections.push(`------\nRepository-specific reviewer instructions (override the generic guidance above when they conflict):\n${repoInstructions}\n`);
+    }
+    return sections.join('\n');
+}
+
+
+/***/ }),
+
 /***/ 264:
 /***/ ((__unused_webpack_module, exports) => {
 
@@ -379,6 +412,7 @@ var __exportStar = (this && this.__exportStar) || function(m, exports) {
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 __exportStar(__nccwpck_require__(264), exports);
+__exportStar(__nccwpck_require__(3278), exports);
 
 
 /***/ }),
@@ -442,7 +476,7 @@ class AnthropicProvider {
         const response = await this.client.messages.create({
             model: this.config.model,
             max_tokens: 4000,
-            system: this.buildSystemPrompt(request),
+            system: (0, prompts_1.buildSystemPrompt)(request),
             messages: [
                 {
                     role: 'user',
@@ -476,19 +510,6 @@ class AnthropicProvider {
                 }))
             }))
         });
-    }
-    buildSystemPrompt(request) {
-        var _a;
-        const isUpdate = request.context.isUpdate;
-        const repoInstructions = (_a = request.context.repoInstructions) === null || _a === void 0 ? void 0 : _a.trim();
-        const repoBlock = repoInstructions
-            ? `\n\n------\nRepository-specific reviewer instructions (override the generic guidance above when they conflict):\n${repoInstructions}\n`
-            : '';
-        return `
-      ${prompts_1.baseCodeReviewPrompt}
-      ${isUpdate ? prompts_1.updateReviewPrompt : ''}
-      ${repoBlock}
-    `;
     }
     parseResponse(response) {
         try {
@@ -606,7 +627,7 @@ class GeminiProvider {
     async review(request) {
         core.debug(`Sending request to Gemini with prompt structure: ${JSON.stringify(request, null, 2)}`);
         const result = await this.model.generateContent({
-            systemInstruction: this.buildSystemPrompt(request),
+            systemInstruction: (0, prompts_1.buildSystemPrompt)(request),
             contents: [
                 {
                     role: 'user',
@@ -640,19 +661,6 @@ class GeminiProvider {
                 }))
             }))
         });
-    }
-    buildSystemPrompt(request) {
-        var _a;
-        const isUpdate = request.context.isUpdate;
-        const repoInstructions = (_a = request.context.repoInstructions) === null || _a === void 0 ? void 0 : _a.trim();
-        const repoBlock = repoInstructions
-            ? `\n\n------\nRepository-specific reviewer instructions (override the generic guidance above when they conflict):\n${repoInstructions}\n`
-            : '';
-        return `
-      ${prompts_1.baseCodeReviewPrompt}
-      ${isUpdate ? prompts_1.updateReviewPrompt : ''}
-      ${repoBlock}
-    `;
     }
     parseResponse(response) {
         try {
@@ -744,7 +752,7 @@ class OpenAIProvider {
             messages: [
                 {
                     role: this.getSystemPromptRole(),
-                    content: this.buildSystemPrompt(request),
+                    content: (0, prompts_1.buildSystemPrompt)(request),
                 },
                 {
                     role: 'user',
@@ -775,19 +783,6 @@ class OpenAIProvider {
                 }))
             }))
         });
-    }
-    buildSystemPrompt(request) {
-        var _a;
-        const isUpdate = request.context.isUpdate;
-        const repoInstructions = (_a = request.context.repoInstructions) === null || _a === void 0 ? void 0 : _a.trim();
-        const repoBlock = repoInstructions
-            ? `\n\n------\nRepository-specific reviewer instructions (override the generic guidance above when they conflict):\n${repoInstructions}\n`
-            : '';
-        return `
-      ${prompts_1.baseCodeReviewPrompt}
-      ${isUpdate ? prompts_1.updateReviewPrompt : ''}
-      ${repoBlock}
-    `;
     }
     parseResponse(response) {
         var _a;
@@ -1364,14 +1359,14 @@ class ReviewService {
         }
         const modifiedFiles = await this.diffService.getRelevantFiles(prDetails, lastReviewedCommit);
         core.info(`Modified files length: ${modifiedFiles.length}`);
-        // Get full content for each modified file
+        // Get full content for each modified file (head version only — the diff
+        // already encodes what changed, so fetching the base version too would
+        // double the file-content tokens for redundant context).
         const filesWithContent = await Promise.all(modifiedFiles.map(async (file) => {
-            console.log('Context for file:', file.path);
-            const fullContent = await this.githubService.getFileContent(file.path, prDetails.head);
+            const content = await this.githubService.getFileContent(file.path, prDetails.head);
             return {
                 path: file.path,
-                content: fullContent,
-                originalContent: await this.githubService.getFileContent(file.path, prDetails.base),
+                content,
                 diff: file.diff,
             };
         }));

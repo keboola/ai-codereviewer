@@ -2,7 +2,7 @@ import OpenAI from 'openai';
 import { jsonrepair } from 'jsonrepair';
 import { AIProvider, AIProviderConfig, ReviewRequest, ReviewResponse } from './AIProvider';
 import * as core from '@actions/core';
-import { baseCodeReviewPrompt, updateReviewPrompt } from '../prompts';
+import { buildSystemPrompt } from '../prompts';
 
 export class OpenAIProvider implements AIProvider {
   private config!: AIProviderConfig;
@@ -26,7 +26,7 @@ export class OpenAIProvider implements AIProvider {
       messages: [
         {
           role: this.getSystemPromptRole(),
-          content: this.buildSystemPrompt(request),
+          content: buildSystemPrompt(request),
         },
         {
           role: 'user',
@@ -60,19 +60,6 @@ export class OpenAIProvider implements AIProvider {
         }))
       }))
     });
-  }
-
-  private buildSystemPrompt(request: ReviewRequest): string {
-    const isUpdate = request.context.isUpdate;
-    const repoInstructions = request.context.repoInstructions?.trim();
-    const repoBlock = repoInstructions
-      ? `\n\n------\nRepository-specific reviewer instructions (override the generic guidance above when they conflict):\n${repoInstructions}\n`
-      : '';
-    return `
-      ${baseCodeReviewPrompt}
-      ${isUpdate ? updateReviewPrompt : ''}
-      ${repoBlock}
-    `;
   }
 
   private parseResponse(response: OpenAI.Chat.Completions.ChatCompletion): ReviewResponse {

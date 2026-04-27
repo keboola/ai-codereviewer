@@ -10,7 +10,6 @@ export interface ReviewRequest {
   files: Array<{
     path: string;
     content: string;
-    originalContent?: string;
     diff?: string;
   }>;
   contextFiles?: Array<{
