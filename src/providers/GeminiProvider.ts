@@ -1,41 +1,15 @@
-import { GenerativeModel, GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
+import { GenerativeModel, GoogleGenerativeAI } from '@google/generative-ai';
 import { AIProvider, AIProviderConfig, ReviewRequest, ReviewResponse } from './AIProvider';
 import * as core from '@actions/core';
 import { jsonrepair } from 'jsonrepair'
-import { buildSystemPrompt } from '../prompts';
+import { buildSystemPrompt, reviewResponseSchema } from '../prompts';
+import { toGeminiSchema } from './geminiSchemaAdapter';
 
-const geminiResponseSchema = {
-  type: SchemaType.OBJECT,
-  properties: {
-    summary: { type: SchemaType.STRING },
-    comments: {
-      type: SchemaType.ARRAY,
-      items: {
-        type: SchemaType.OBJECT,
-        properties: {
-          path: { type: SchemaType.STRING },
-          line: { type: SchemaType.INTEGER },
-          comment: { type: SchemaType.STRING },
-          severity: {
-            type: SchemaType.STRING,
-            enum: ['blocker', 'major', 'minor', 'nit'],
-          },
-          category: {
-            type: SchemaType.STRING,
-            enum: ['security', 'bug', 'performance', 'maintainability', 'style', 'docs', 'test', 'other'],
-          },
-        },
-        required: ['path', 'line', 'comment', 'severity', 'category'],
-      },
-    },
-    suggestedAction: {
-      type: SchemaType.STRING,
-      enum: ['approve', 'request_changes', 'comment'],
-    },
-    confidence: { type: SchemaType.NUMBER },
-  },
-  required: ['summary', 'comments', 'suggestedAction', 'confidence'],
-};
+// Single source of truth for the response shape lives in
+// src/prompts/reviewSchema.ts (JSON Schema). Convert it once at module
+// load to Gemini's SchemaType-flavored shape — keeps OpenAI, Gemini, and
+// any future provider schema-aligned automatically.
+const geminiResponseSchema = toGeminiSchema(reviewResponseSchema);
 
 export class GeminiProvider implements AIProvider {
   private config!: AIProviderConfig;

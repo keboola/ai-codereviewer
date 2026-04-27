@@ -656,38 +656,12 @@ const generative_ai_1 = __nccwpck_require__(7656);
 const core = __importStar(__nccwpck_require__(7484));
 const jsonrepair_1 = __nccwpck_require__(2555);
 const prompts_1 = __nccwpck_require__(9493);
-const geminiResponseSchema = {
-    type: generative_ai_1.SchemaType.OBJECT,
-    properties: {
-        summary: { type: generative_ai_1.SchemaType.STRING },
-        comments: {
-            type: generative_ai_1.SchemaType.ARRAY,
-            items: {
-                type: generative_ai_1.SchemaType.OBJECT,
-                properties: {
-                    path: { type: generative_ai_1.SchemaType.STRING },
-                    line: { type: generative_ai_1.SchemaType.INTEGER },
-                    comment: { type: generative_ai_1.SchemaType.STRING },
-                    severity: {
-                        type: generative_ai_1.SchemaType.STRING,
-                        enum: ['blocker', 'major', 'minor', 'nit'],
-                    },
-                    category: {
-                        type: generative_ai_1.SchemaType.STRING,
-                        enum: ['security', 'bug', 'performance', 'maintainability', 'style', 'docs', 'test', 'other'],
-                    },
-                },
-                required: ['path', 'line', 'comment', 'severity', 'category'],
-            },
-        },
-        suggestedAction: {
-            type: generative_ai_1.SchemaType.STRING,
-            enum: ['approve', 'request_changes', 'comment'],
-        },
-        confidence: { type: generative_ai_1.SchemaType.NUMBER },
-    },
-    required: ['summary', 'comments', 'suggestedAction', 'confidence'],
-};
+const geminiSchemaAdapter_1 = __nccwpck_require__(2975);
+// Single source of truth for the response shape lives in
+// src/prompts/reviewSchema.ts (JSON Schema). Convert it once at module
+// load to Gemini's SchemaType-flavored shape — keeps OpenAI, Gemini, and
+// any future provider schema-aligned automatically.
+const geminiResponseSchema = (0, geminiSchemaAdapter_1.toGeminiSchema)(prompts_1.reviewResponseSchema);
 class GeminiProvider {
     async initialize(config) {
         this.config = config;
@@ -953,6 +927,54 @@ class OpenAIProvider {
     }
 }
 exports.OpenAIProvider = OpenAIProvider;
+
+
+/***/ }),
+
+/***/ 2975:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.toGeminiSchema = toGeminiSchema;
+const generative_ai_1 = __nccwpck_require__(7656);
+const TYPE_MAP = {
+    object: generative_ai_1.SchemaType.OBJECT,
+    array: generative_ai_1.SchemaType.ARRAY,
+    string: generative_ai_1.SchemaType.STRING,
+    integer: generative_ai_1.SchemaType.INTEGER,
+    number: generative_ai_1.SchemaType.NUMBER,
+    boolean: generative_ai_1.SchemaType.BOOLEAN,
+};
+function toGeminiSchema(node) {
+    const jsonType = node.type;
+    if (!jsonType || !(jsonType in TYPE_MAP)) {
+        throw new Error(`toGeminiSchema: unsupported or missing JSON Schema type '${jsonType}'`);
+    }
+    const out = { type: TYPE_MAP[jsonType] };
+    if (jsonType === 'object') {
+        if (node.properties) {
+            const props = {};
+            for (const [key, child] of Object.entries(node.properties)) {
+                props[key] = toGeminiSchema(child);
+            }
+            out.properties = props;
+        }
+        if (node.required) {
+            out.required = [...node.required];
+        }
+    }
+    else if (jsonType === 'array') {
+        if (node.items) {
+            out.items = toGeminiSchema(node.items);
+        }
+    }
+    else if (jsonType === 'string' && node.enum) {
+        out.enum = [...node.enum];
+    }
+    return out;
+}
 
 
 /***/ }),
