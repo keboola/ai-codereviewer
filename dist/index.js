@@ -60,6 +60,7 @@ async function main() {
         // Get new configuration inputs
         const approveReviews = core.getBooleanInput('APPROVE_REVIEWS');
         const maxComments = parseInt(core.getInput('MAX_COMMENTS') || '0', 10);
+        const minCommentSeverity = (core.getInput('MIN_COMMENT_SEVERITY') || 'minor').toLowerCase();
         const projectContext = core.getInput('PROJECT_CONTEXT');
         const contextFilesInput = core.getInput('CONTEXT_FILES');
         const contextFiles = contextFilesInput ? contextFilesInput.split(',').map(f => f.trim()).filter(Boolean) : [];
@@ -81,6 +82,7 @@ async function main() {
             contextFiles,
             providerLabel: provider,
             modelLabel: model,
+            minCommentSeverity: minCommentSeverity,
         });
         // Get PR number from GitHub context
         const prNumber = getPRNumberFromContext();
@@ -137,7 +139,15 @@ exports.updateReviewPrompt = exports.baseCodeReviewPrompt = exports.outputFormat
 exports.outputFormat = `
 {
   "summary": "",
-  "comments": [{"path": "file_path", "line": number, "comment": "comment text"}],
+  "comments": [
+    {
+      "path": "file_path",
+      "line": number,
+      "comment": "comment text",
+      "severity": "blocker|major|minor|nit",
+      "category": "security|bug|performance|maintainability|style|docs|test|other"
+    }
+  ],
   "suggestedAction": "approve|request_changes|comment",
   "confidence": number
 }
@@ -276,6 +286,12 @@ For the "comments" field:
   * path: The path to the file that the comment is about
   * line: The line number in the file that the comment is about
   * comment: The comment text
+  * severity: One of "blocker", "major", "minor", "nit"
+      - "blocker": will block merge — security vulnerability, data loss / corruption, broken core functionality, race condition or memory leak in a critical path, missing input validation on a sensitive operation, unauthorized-access risk
+      - "major": should be addressed before merge — likely bug, significant performance regression, incorrect error handling, broken contract, clearly missing test coverage for risky logic
+      - "minor": worth addressing — code smell, duplicated logic, unclear naming, non-critical lint or typing issue, small perf improvement
+      - "nit": stylistic / cosmetic — do NOT post unless explicitly asked by repo instructions
+  * category: One of "security", "bug", "performance", "maintainability", "style", "docs", "test", "other"
 - Other rules for "comments" field:
   * ONLY use right-side line numbers that appear before "|" in the diff (the "<rightLine>" value).
   * DO NOT use line number 0, line numbers not present in the diff, or "-" lines (those are removed lines).
@@ -1259,8 +1275,16 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.ReviewService = void 0;
 const core = __importStar(__nccwpck_require__(7484));
+const SEVERITY_ORDER = ['nit', 'minor', 'major', 'blocker'];
+function severityRank(s) {
+    if (!s)
+        return SEVERITY_ORDER.indexOf('minor');
+    const idx = SEVERITY_ORDER.indexOf(s);
+    return idx === -1 ? SEVERITY_ORDER.indexOf('minor') : idx;
+}
 class ReviewService {
     constructor(aiProvider, githubService, diffService, config) {
+        var _a;
         this.aiProvider = aiProvider;
         this.githubService = githubService;
         this.diffService = diffService;
@@ -1271,6 +1295,7 @@ class ReviewService {
             contextFiles: config.contextFiles || ['package.json', 'README.md'],
             providerLabel: config.providerLabel,
             modelLabel: config.modelLabel,
+            minCommentSeverity: (_a = config.minCommentSeverity) !== null && _a !== void 0 ? _a : 'minor',
         };
     }
     async performReview(prNumber) {
@@ -1330,17 +1355,54 @@ class ReviewService {
             || '';
         const modelInfo = `_Code review performed by \`${provider}${model ? ` - ${model}` : ''}\`._`;
         review.summary = `${review.summary}\n\n------\n\n${modelInfo}`;
-        const dedupedComments = this.dedupeAgainstPrevious((_e = review.lineComments) !== null && _e !== void 0 ? _e : [], previousReviews);
         const validLinesByPath = new Map(modifiedFiles.map(f => [f.path, f.validRightLines]));
+        const filteredBySeverity = this.filterBySeverity((_e = review.lineComments) !== null && _e !== void 0 ? _e : []);
+        const dedupedComments = this.dedupeAgainstPrevious(filteredBySeverity, previousReviews);
+        const validatedComments = this.dropInvalidLines(dedupedComments, validLinesByPath);
+        const sortedComments = this.sortBySeverityDesc(validatedComments);
         const cappedComments = this.config.maxComments > 0
-            ? dedupedComments.slice(0, this.config.maxComments)
-            : dedupedComments;
+            ? sortedComments.slice(0, this.config.maxComments)
+            : sortedComments;
+        const hasBlocker = cappedComments.some(c => c.severity === 'blocker');
         await this.githubService.submitReview(prNumber, {
             ...review,
             lineComments: cappedComments,
-            suggestedAction: this.normalizeReviewEvent(review.suggestedAction),
+            suggestedAction: this.normalizeReviewEvent(review.suggestedAction, { hasBlocker }),
         }, validLinesByPath);
         return review;
+    }
+    dropInvalidLines(comments, validLinesByPath) {
+        const kept = [];
+        let dropped = 0;
+        for (const c of comments) {
+            const valid = validLinesByPath.get(c.path);
+            if (valid && valid.has(c.line)) {
+                kept.push(c);
+            }
+            else {
+                dropped++;
+                if (c.severity === 'blocker') {
+                    core.warning(`Blocker comment dropped because line is outside the diff: ${c.path}:${c.line}`);
+                }
+            }
+        }
+        if (dropped > 0) {
+            core.info(`Dropped ${dropped} comment(s) targeting lines outside the PR diff`);
+        }
+        return kept;
+    }
+    filterBySeverity(comments) {
+        const min = severityRank(this.config.minCommentSeverity);
+        const before = comments.length;
+        const kept = comments.filter(c => severityRank(c.severity) >= min);
+        const dropped = before - kept.length;
+        if (dropped > 0) {
+            core.info(`Dropped ${dropped} comment(s) below MIN_COMMENT_SEVERITY=${this.config.minCommentSeverity}`);
+        }
+        return kept;
+    }
+    sortBySeverityDesc(comments) {
+        return [...comments].sort((a, b) => severityRank(b.severity) - severityRank(a.severity));
     }
     dedupeAgainstPrevious(newComments, previousReviews) {
         if (!previousReviews || previousReviews.length === 0) {
@@ -1386,16 +1448,19 @@ class ReviewService {
         }
         return results;
     }
-    normalizeReviewEvent(action) {
-        if (!action || !this.config.approveReviews) {
-            return 'COMMENT';
+    normalizeReviewEvent(action, signals) {
+        if (!this.config.approveReviews) {
+            return signals.hasBlocker ? 'REQUEST_CHANGES' : 'COMMENT';
+        }
+        if (signals.hasBlocker) {
+            return 'REQUEST_CHANGES';
         }
         const eventMap = {
             'approve': 'APPROVE',
             'request_changes': 'REQUEST_CHANGES',
             'comment': 'COMMENT',
         };
-        return eventMap[action.toLowerCase()] || 'COMMENT';
+        return eventMap[(action || '').toLowerCase()] || 'COMMENT';
     }
 }
 exports.ReviewService = ReviewService;

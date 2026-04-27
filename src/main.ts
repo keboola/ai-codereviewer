@@ -19,6 +19,7 @@ async function main() {
     // Get new configuration inputs
     const approveReviews = core.getBooleanInput('APPROVE_REVIEWS');
     const maxComments = parseInt(core.getInput('MAX_COMMENTS') || '0', 10);
+    const minCommentSeverity = (core.getInput('MIN_COMMENT_SEVERITY') || 'minor').toLowerCase();
     const projectContext = core.getInput('PROJECT_CONTEXT');
     const contextFilesInput = core.getInput('CONTEXT_FILES');
     const contextFiles = contextFilesInput ? contextFilesInput.split(',').map(f => f.trim()).filter(Boolean) : [];
@@ -46,6 +47,7 @@ async function main() {
         contextFiles,
         providerLabel: provider,
         modelLabel: model,
+        minCommentSeverity: minCommentSeverity as 'blocker' | 'major' | 'minor' | 'nit',
       }
     );
 
