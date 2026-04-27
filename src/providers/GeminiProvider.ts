@@ -2,7 +2,14 @@ import { GenerativeModel, GoogleGenerativeAI } from '@google/generative-ai';
 import { AIProvider, AIProviderConfig, ReviewRequest, ReviewResponse } from './AIProvider';
 import * as core from '@actions/core';
 import { jsonrepair } from 'jsonrepair'
-import { buildSystemPrompt } from '../prompts';
+import { buildSystemPrompt, reviewResponseSchema } from '../prompts';
+import { toGeminiSchema } from './geminiSchemaAdapter';
+
+// Single source of truth for the response shape lives in
+// src/prompts/reviewSchema.ts (JSON Schema). Convert it once at module
+// load to Gemini's SchemaType-flavored shape — keeps OpenAI, Gemini, and
+// any future provider schema-aligned automatically.
+const geminiResponseSchema = toGeminiSchema(reviewResponseSchema);
 
 export class GeminiProvider implements AIProvider {
   private config!: AIProviderConfig;
@@ -16,6 +23,7 @@ export class GeminiProvider implements AIProvider {
       model: this.config.model,
       generationConfig: {
         responseMimeType: 'application/json',
+        responseSchema: geminiResponseSchema as any,
       },
     });
   }

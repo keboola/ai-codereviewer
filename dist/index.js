@@ -413,6 +413,61 @@ var __exportStar = (this && this.__exportStar) || function(m, exports) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 __exportStar(__nccwpck_require__(264), exports);
 __exportStar(__nccwpck_require__(3278), exports);
+__exportStar(__nccwpck_require__(9978), exports);
+
+
+/***/ }),
+
+/***/ 9978:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.reviewResponseSchema = void 0;
+/**
+ * JSON Schema for the review response. Used by providers that support
+ * structured outputs (OpenAI json_schema, Gemini responseSchema) to
+ * eliminate parse-failure handling.
+ *
+ * Field names match the ON-WIRE contract the prompt teaches the model
+ * ("comments", "suggestedAction"), not the internal TypeScript shape
+ * ("lineComments"). The provider parsers already do this rename.
+ */
+exports.reviewResponseSchema = {
+    type: 'object',
+    additionalProperties: false,
+    required: ['summary', 'comments', 'suggestedAction', 'confidence'],
+    properties: {
+        summary: { type: 'string' },
+        comments: {
+            type: 'array',
+            items: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['path', 'line', 'comment', 'severity', 'category'],
+                properties: {
+                    path: { type: 'string' },
+                    line: { type: 'integer', minimum: 0 },
+                    comment: { type: 'string' },
+                    severity: {
+                        type: 'string',
+                        enum: ['blocker', 'major', 'minor', 'nit'],
+                    },
+                    category: {
+                        type: 'string',
+                        enum: ['security', 'bug', 'performance', 'maintainability', 'style', 'docs', 'test', 'other'],
+                    },
+                },
+            },
+        },
+        suggestedAction: {
+            type: 'string',
+            enum: ['approve', 'request_changes', 'comment'],
+        },
+        confidence: { type: 'number', minimum: 0, maximum: 100 },
+    },
+};
 
 
 /***/ }),
@@ -471,25 +526,45 @@ class AnthropicProvider {
         });
     }
     async review(request) {
-        var _a;
+        var _a, _b;
         core.debug(`Sending request to Anthropic with prompt structure: ${JSON.stringify(request, null, 2)}`);
+        const systemPrompt = (0, prompts_1.buildSystemPrompt)(request);
         const response = await this.client.messages.create({
             model: this.config.model,
-            max_tokens: 4000,
-            system: (0, prompts_1.buildSystemPrompt)(request),
+            max_tokens: 8000,
+            // Pass system as a content-block array so we can attach cache_control.
+            // The base reviewer instructions are identical across every PR review,
+            // so caching the system block trades one full-input billing for ~10%
+            // on every subsequent call within the cache window.
+            system: [
+                {
+                    type: 'text',
+                    text: systemPrompt,
+                    cache_control: { type: 'ephemeral' },
+                },
+            ],
             messages: [
                 {
                     role: 'user',
-                    content: this.buildPullRequestPrompt(request),
-                },
-                {
-                    role: 'user',
-                    content: 'Return the response in JSON format only, no other text or comments.',
+                    content: `${this.buildPullRequestPrompt(request)}\n\nReturn the response in JSON format only, no other text or comments.`,
                 },
             ],
             temperature: (_a = this.config.temperature) !== null && _a !== void 0 ? _a : 0.3,
         });
-        core.debug(`Raw Anthropic response: ${JSON.stringify(response.content[0].text, null, 2)}`);
+        if (response.stop_reason === 'max_tokens') {
+            core.warning('Anthropic response was truncated (stop_reason=max_tokens). Some line comments may have been lost — consider raising max_tokens or trimming context.');
+        }
+        const firstBlock = response.content[0];
+        if (!firstBlock || firstBlock.type !== 'text') {
+            core.error(`Anthropic returned a non-text first content block (type=${(_b = firstBlock === null || firstBlock === void 0 ? void 0 : firstBlock.type) !== null && _b !== void 0 ? _b : 'undefined'})`);
+            return {
+                summary: 'Anthropic returned a non-text response',
+                lineComments: [],
+                suggestedAction: 'COMMENT',
+                confidence: 0,
+            };
+        }
+        core.debug(`Raw Anthropic response: ${JSON.stringify(firstBlock.text, null, 2)}`);
         const parsedResponse = this.parseResponse(response);
         core.info(`Parsed response: ${JSON.stringify(parsedResponse, null, 2)}`);
         return parsedResponse;
@@ -581,6 +656,12 @@ const generative_ai_1 = __nccwpck_require__(7656);
 const core = __importStar(__nccwpck_require__(7484));
 const jsonrepair_1 = __nccwpck_require__(2555);
 const prompts_1 = __nccwpck_require__(9493);
+const geminiSchemaAdapter_1 = __nccwpck_require__(2975);
+// Single source of truth for the response shape lives in
+// src/prompts/reviewSchema.ts (JSON Schema). Convert it once at module
+// load to Gemini's SchemaType-flavored shape — keeps OpenAI, Gemini, and
+// any future provider schema-aligned automatically.
+const geminiResponseSchema = (0, geminiSchemaAdapter_1.toGeminiSchema)(prompts_1.reviewResponseSchema);
 class GeminiProvider {
     async initialize(config) {
         this.config = config;
@@ -589,6 +670,7 @@ class GeminiProvider {
             model: this.config.model,
             generationConfig: {
                 responseMimeType: 'application/json',
+                responseSchema: geminiResponseSchema,
             },
         });
     }
@@ -760,7 +842,7 @@ class OpenAIProvider {
                 },
             ],
             temperature: this.getTemperature(),
-            response_format: this.isO1Mini() ? { type: 'text' } : { type: 'json_object' },
+            response_format: this.responseFormat(),
         });
         core.debug(`Raw OpenAI response: ${JSON.stringify(response.choices[0].message.content, null, 2)}`);
         const parsedResponse = this.parseResponse(response);
@@ -821,6 +903,19 @@ class OpenAIProvider {
     isO1Mini() {
         return this.config.model.includes('o1-mini');
     }
+    responseFormat() {
+        if (this.isO1Mini()) {
+            return { type: 'text' };
+        }
+        return {
+            type: 'json_schema',
+            json_schema: {
+                name: 'CodeReviewResponse',
+                schema: prompts_1.reviewResponseSchema,
+                strict: true,
+            },
+        };
+    }
     getSystemPromptRole() {
         // o1 doesn't support 'system' role
         return this.isO1Mini() ? 'user' : 'system';
@@ -832,6 +927,54 @@ class OpenAIProvider {
     }
 }
 exports.OpenAIProvider = OpenAIProvider;
+
+
+/***/ }),
+
+/***/ 2975:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.toGeminiSchema = toGeminiSchema;
+const generative_ai_1 = __nccwpck_require__(7656);
+const TYPE_MAP = {
+    object: generative_ai_1.SchemaType.OBJECT,
+    array: generative_ai_1.SchemaType.ARRAY,
+    string: generative_ai_1.SchemaType.STRING,
+    integer: generative_ai_1.SchemaType.INTEGER,
+    number: generative_ai_1.SchemaType.NUMBER,
+    boolean: generative_ai_1.SchemaType.BOOLEAN,
+};
+function toGeminiSchema(node) {
+    const jsonType = node.type;
+    if (!jsonType || !(jsonType in TYPE_MAP)) {
+        throw new Error(`toGeminiSchema: unsupported or missing JSON Schema type '${jsonType}'`);
+    }
+    const out = { type: TYPE_MAP[jsonType] };
+    if (jsonType === 'object') {
+        if (node.properties) {
+            const props = {};
+            for (const [key, child] of Object.entries(node.properties)) {
+                props[key] = toGeminiSchema(child);
+            }
+            out.properties = props;
+        }
+        if (node.required) {
+            out.required = [...node.required];
+        }
+    }
+    else if (jsonType === 'array') {
+        if (node.items) {
+            out.items = toGeminiSchema(node.items);
+        }
+    }
+    else if (jsonType === 'string' && node.enum) {
+        out.enum = [...node.enum];
+    }
+    return out;
+}
 
 
 /***/ }),
