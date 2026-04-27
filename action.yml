@@ -62,6 +62,10 @@ inputs:
     description: "Files to exclude (glob patterns)"
     required: false
     default: "**/*.lock,**/*.json,**/*.md"
+  CONFIG_FILE:
+    description: "Path (in the PR head) to a YAML file whose top-level keys override action inputs for this repo. Useful when the action runs from an org-level Required Workflow and individual repos need to tune knobs without editing the central workflow. Skipped silently if missing."
+    required: false
+    default: ".github/ai-review.yml"
 runs:
   using: "node24"
   main: "dist/index.js"

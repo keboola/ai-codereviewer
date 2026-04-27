@@ -40,9 +40,21 @@ export class OpenAIProvider implements AIProvider {
     core.debug(`Raw OpenAI response: ${JSON.stringify(response.choices[0].message.content, null, 2)}`);
 
     const parsedResponse = this.parseResponse(response);
+    parsedResponse.usage = this.extractUsage(response);
     core.info(`Parsed response: ${JSON.stringify(parsedResponse, null, 2)}`);
 
     return parsedResponse;
+  }
+
+  private extractUsage(response: OpenAI.Chat.Completions.ChatCompletion) {
+    const u = response.usage;
+    if (!u) return undefined;
+    return {
+      inputTokens: u.prompt_tokens,
+      outputTokens: u.completion_tokens,
+      cachedInputTokens: u.prompt_tokens_details?.cached_tokens,
+      totalTokens: u.total_tokens,
+    };
   }
 
   private buildPullRequestPrompt(request: ReviewRequest): string {

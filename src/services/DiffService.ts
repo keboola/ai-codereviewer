@@ -15,7 +15,15 @@ export class DiffService {
 
   constructor(githubToken: string, excludePatterns: string) {
     this.githubToken = githubToken;
-    this.excludePatterns = excludePatterns
+    this.excludePatterns = this.parsePatterns(excludePatterns);
+  }
+
+  setExcludePatterns(excludePatterns: string): void {
+    this.excludePatterns = this.parsePatterns(excludePatterns);
+  }
+
+  private parsePatterns(excludePatterns: string): string[] {
+    return excludePatterns
       .split(',')
       .map(p => p.trim())
       .filter(p => p);

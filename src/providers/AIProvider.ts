@@ -53,6 +53,13 @@ export type CommentCategory =
   | 'test'
   | 'other';
 
+export interface UsageReport {
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedInputTokens?: number;
+  totalTokens?: number;
+}
+
 export interface ReviewResponse {
   summary: string;
   lineComments?: Array<{
@@ -64,6 +71,7 @@ export interface ReviewResponse {
   }>;
   suggestedAction: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT';
   confidence: number;
+  usage?: UsageReport;
 }
 
 export interface AIProvider {

@@ -127,6 +127,7 @@ Regardless of mode, applying the `ai-review` label to any PR always triggers a f
 | `INSTRUCTIONS_URL_TOKEN` | Optional bearer token for `INSTRUCTIONS_URL` when the source requires authentication (private GitHub raw URLs, etc.). | `""` |
 | `CONTEXT_FILES` | Files to include in review (comma-separated) | `"package.json,README.md"` |
 | `EXCLUDE_PATTERNS` | Files to exclude (glob patterns, comma-separated) | `"**/*.lock,**/*.json,**/*.md"` |
+| `CONFIG_FILE` | Path (in the PR head) to a YAML file whose top-level keys override action inputs for this repo. See "Per-repo overrides" below. | `.github/ai-review.yml` |
 
 ### Per-repository reviewer instructions
 
@@ -155,6 +156,28 @@ generic guidance when they conflict.
 > protected branches, or (b) point `INSTRUCTIONS_FILE` at a path that
 > only your team can modify (e.g., a file with a CODEOWNERS rule), or
 > (c) leave `INSTRUCTIONS_FILE` empty for fork PRs.
+
+### Per-repo overrides via `.github/ai-review.yml`
+
+When the action runs from an org-level **Required Workflow** (one workflow file driving every repo in the org), individual repos still need to tune knobs without editing the central workflow. Drop a YAML file at `.github/ai-review.yml` in the consumer repo — its top-level keys override the matching action inputs.
+
+```yaml
+# .github/ai-review.yml — every key is optional.
+min_comment_severity: major          # blocker | major | minor | nit
+approve_reviews: true                # bool — must be true to ever auto-approve
+approve_confidence_threshold: 90     # 0-100
+max_comments: 5                      # 0 = no cap
+exclude_patterns: "vendor/**,*.generated.ts"
+instructions_file: ".github/review-rules.md"
+project_context: "This repo is the public API gateway."
+project_context_file: "ARCHITECTURE.md"
+```
+
+**Layering.** Action inputs (set in the central workflow) are the **baseline**. Anything set in this file **overrides** the baseline for this repo. Anything not in the file falls through to the action input value. Sensitive / org-level inputs (API keys, `AI_BASE_URL`, `INSTRUCTIONS_URL`, `INSTRUCTIONS_URL_TOKEN`) are intentionally **not** overridable from this file — they stay in workflow inputs / secrets.
+
+**Where the file is fetched from.** From the **PR head**, so each PR exercises the version on its own branch. Same security model as `INSTRUCTIONS_FILE` — see the fork-PR note in that section.
+
+**Bad values are warned and ignored**, never fail the action. e.g. `min_comment_severity: criticla` (typo) logs a warning and the action falls back to the baseline.
 
 ### Sharing reviewer instructions across many repos
 
@@ -244,6 +267,16 @@ accept this for private content.
 > `INSTRUCTIONS_URL` content is **not** controllable by a fork PR
 > author, so it is the safe place for rules you want enforced even on
 > external contributions.
+
+### Token usage telemetry
+
+Every successful review writes a small token-usage table to the GitHub Actions **step summary** (visible at the bottom of the run page):
+
+| Provider | Model | Input | Cached input | Output | Total |
+|---|---|---|---|---|---|
+| anthropic | claude-sonnet-4-6 | 12,034 | 11,200 | 423 | 12,457 |
+
+When running on Anthropic with prompt caching enabled (default), `Cached input` will be 0 on the very first run and equal most of `Input` on subsequent runs within the cache window — that's the caching working. Same idea for OpenAI's automatic prefix caching, exposed via `prompt_tokens_details.cached_tokens`.
 
 ### Supported Models
 

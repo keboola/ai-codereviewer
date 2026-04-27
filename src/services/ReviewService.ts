@@ -1,7 +1,9 @@
 import { AIProvider } from '../providers/AIProvider';
 import { GitHubService } from '../services/GitHubService';
 import { DiffService } from '../services/DiffService';
-import { CommentSeverity, ReviewResponse } from '../providers/AIProvider';
+import { CommentSeverity, ReviewResponse, UsageReport } from '../providers/AIProvider';
+import { loadRepoConfig, RepoConfig } from './RepoConfigLoader';
+import { withRetry } from '../utils/retry';
 import * as core from '@actions/core';
 
 const SEVERITY_ORDER: CommentSeverity[] = ['nit', 'minor', 'major', 'blocker'];
@@ -22,6 +24,7 @@ export interface ReviewServiceConfig {
   instructionsFile?: string;
   instructionsUrl?: string;
   instructionsUrlToken?: string;
+  configFile?: string;
   providerLabel?: string;
   modelLabel?: string;
   minCommentSeverity?: CommentSeverity;
@@ -51,10 +54,21 @@ export class ReviewService {
       instructionsFile: config.instructionsFile,
       instructionsUrl: config.instructionsUrl,
       instructionsUrlToken: config.instructionsUrlToken,
+      configFile: config.configFile,
       providerLabel: config.providerLabel,
       modelLabel: config.modelLabel,
       minCommentSeverity: config.minCommentSeverity ?? 'minor',
     };
+  }
+
+  private applyRepoConfig(repo: RepoConfig): void {
+    if (repo.min_comment_severity !== undefined) this.config.minCommentSeverity = repo.min_comment_severity;
+    if (repo.approve_reviews !== undefined) this.config.approveReviews = repo.approve_reviews;
+    if (repo.approve_confidence_threshold !== undefined) this.config.approveConfidenceThreshold = repo.approve_confidence_threshold;
+    if (repo.max_comments !== undefined) this.config.maxComments = repo.max_comments;
+    if (repo.instructions_file !== undefined) this.config.instructionsFile = repo.instructions_file;
+    if (repo.project_context_file !== undefined) this.config.projectContextFile = repo.project_context_file;
+    if (repo.project_context !== undefined) this.config.projectContext = repo.project_context;
   }
 
   async performReview(prNumber: number): Promise<ReviewResponse> {
@@ -64,12 +78,21 @@ export class ReviewService {
     const prDetails = await this.githubService.getPRDetails(prNumber);
     core.info(`PR title: ${prDetails.title}`);
 
+    // Layer per-repo config (.github/ai-review.yml) on top of action inputs
+    // BEFORE we use any tunable to fetch / filter / decide. exclude_patterns
+    // is applied to DiffService below; the rest mutate this.config.
+    const repoConfig = await loadRepoConfig(this.githubService, this.config.configFile, prDetails.head);
+    this.applyRepoConfig(repoConfig);
+    if (repoConfig.exclude_patterns !== undefined) {
+      this.diffService.setExcludePatterns(repoConfig.exclude_patterns);
+    }
+
     // Get modified files from diff
     const lastReviewedCommit = await this.githubService.getLastReviewedCommit(prNumber);
     const isUpdate = !!lastReviewedCommit;
 
     // If this is an update, get previous reviews
-    let previousReviews;
+    let previousReviews: Awaited<ReturnType<typeof this.githubService.getPreviousReviews>> | undefined;
     if (isUpdate) {
       previousReviews = await this.githubService.getPreviousReviews(prNumber);
       core.debug(`Found ${previousReviews.length} previous reviews`);
@@ -96,25 +119,33 @@ export class ReviewService {
     const contextFiles = await this.getRepositoryContext();
     const repoInstructions = await this.getRepoInstructions(prDetails.head);
 
-    // Perform AI review
-    const review = await this.aiProvider.review({
-      files: filesWithContent,
-      contextFiles,
-      previousReviews,
-      pullRequest: {
-        title: prDetails.title,
-        description: prDetails.description,
-        base: prDetails.base,
-        head: prDetails.head,
-      },
-      context: {
-        repository: process.env.GITHUB_REPOSITORY ?? '',
-        owner: process.env.GITHUB_REPOSITORY_OWNER ?? '',
-        projectContext: await this.getProjectContext(prDetails.head),
-        repoInstructions,
-        isUpdate,
-      },
-    });
+    // Perform AI review with retry on transient errors
+    const projectContext = await this.getProjectContext(prDetails.head);
+    const review = await withRetry(
+      () => this.aiProvider.review({
+        files: filesWithContent,
+        contextFiles,
+        previousReviews,
+        pullRequest: {
+          title: prDetails.title,
+          description: prDetails.description,
+          base: prDetails.base,
+          head: prDetails.head,
+        },
+        context: {
+          repository: process.env.GITHUB_REPOSITORY ?? '',
+          owner: process.env.GITHUB_REPOSITORY_OWNER ?? '',
+          projectContext,
+          repoInstructions,
+          isUpdate,
+        },
+      }),
+      { label: 'aiProvider.review' }
+    );
+
+    if (review.usage) {
+      await this.writeUsageSummary(review.usage);
+    }
 
     // Add model name to summary
     const provider = this.config.providerLabel?.toUpperCase()
@@ -236,6 +267,33 @@ export class ReviewService {
 
   private commentKey(path: string, line: number, body: string): string {
     return `${path} ${line} ${body.trim().replace(/\s+/g, ' ').toLowerCase()}`;
+  }
+
+  private async writeUsageSummary(usage: UsageReport): Promise<void> {
+    const provider = this.config.providerLabel || 'AI';
+    const model = this.config.modelLabel || '';
+    const fmt = (n?: number) => (typeof n === 'number' ? n.toLocaleString() : '—');
+    try {
+      await core.summary
+        .addHeading('AI review token usage', 3)
+        .addTable([
+          [
+            { data: 'Provider', header: true },
+            { data: 'Model', header: true },
+            { data: 'Input', header: true },
+            { data: 'Cached input', header: true },
+            { data: 'Output', header: true },
+            { data: 'Total', header: true },
+          ],
+          [provider, model, fmt(usage.inputTokens), fmt(usage.cachedInputTokens), fmt(usage.outputTokens), fmt(usage.totalTokens)],
+        ])
+        .write();
+    } catch (e) {
+      core.debug(`Could not write summary: ${e}`);
+    }
+    core.info(
+      `Tokens — input: ${fmt(usage.inputTokens)} (cached: ${fmt(usage.cachedInputTokens)}), output: ${fmt(usage.outputTokens)}, total: ${fmt(usage.totalTokens)}`
+    );
   }
 
   private async getRepoInstructions(headRef: string): Promise<string | undefined> {

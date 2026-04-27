@@ -41,6 +41,48 @@ describe('ReviewService', () => {
     global.fetch = originalFetch;
   });
 
+  it('per-repo CONFIG_FILE overrides action-input baselines', async () => {
+    // Baseline: minor severity, threshold 80, max 0 (unlimited).
+    // YAML overrides: major severity, threshold 95, max 1.
+    // AI returns one minor and one major comment + APPROVE@90.
+    // Expected after override: minor dropped, major kept, APPROVE downgraded
+    // to COMMENT (90 < 95).
+    const { githubService, diffService, aiProvider } = makeServices({
+      summary: 'sum',
+      suggestedAction: 'APPROVE',
+      confidence: 90,
+      lineComments: [
+        { path: 'src/a.ts', line: 1, comment: 'minor issue', severity: 'minor' },
+        { path: 'src/a.ts', line: 2, comment: 'big issue', severity: 'major' },
+      ]
+    });
+
+    const yaml = `
+min_comment_severity: major
+approve_confidence_threshold: 95
+max_comments: 5
+`.trim();
+
+    (githubService.getFileContent as jest.Mock).mockImplementation(
+      async (path: string) => path === '.github/ai-review.yml' ? yaml : 'content'
+    );
+
+    const service = new ReviewService(aiProvider as any, githubService, diffService, {
+      maxComments: 0,
+      approveReviews: true,
+      approveConfidenceThreshold: 80,
+      minCommentSeverity: 'minor',
+      configFile: '.github/ai-review.yml',
+    });
+
+    await service.performReview(1);
+
+    const submit = githubService.submitReview as jest.Mock;
+    const submitted = submit.mock.calls[0][1];
+    expect(submitted.lineComments.map((c: any) => c.severity)).toEqual(['major']);
+    expect(submitted.suggestedAction).toBe('COMMENT'); // downgraded from APPROVE@90 because YAML raised threshold to 95
+  });
+
   it('combines INSTRUCTIONS_URL (shared) and INSTRUCTIONS_FILE (local) into the prompt', async () => {
     const { githubService, diffService, aiProvider } = makeServices({
       summary: 'sum', suggestedAction: 'COMMENT', confidence: 50, lineComments: []
