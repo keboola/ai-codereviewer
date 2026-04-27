@@ -8,6 +8,10 @@ on:
 
 permissions: write-all
 
+concurrency:
+  group: code-review-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   code_review:
     runs-on: ubuntu-latest
