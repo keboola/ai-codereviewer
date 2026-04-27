@@ -63,6 +63,7 @@ async function main() {
         const maxComments = parseInt(core.getInput('MAX_COMMENTS') || '0', 10);
         const minCommentSeverity = (core.getInput('MIN_COMMENT_SEVERITY') || 'minor').toLowerCase();
         const projectContext = core.getInput('PROJECT_CONTEXT');
+        const instructionsFile = core.getInput('INSTRUCTIONS_FILE');
         const contextFilesInput = core.getInput('CONTEXT_FILES');
         const contextFiles = contextFilesInput ? contextFilesInput.split(',').map(f => f.trim()).filter(Boolean) : [];
         const excludePatterns = core.getInput('EXCLUDE_PATTERNS');
@@ -82,6 +83,7 @@ async function main() {
             approveConfidenceThreshold,
             projectContext,
             contextFiles,
+            instructionsFile,
             providerLabel: provider,
             modelLabel: model,
             minCommentSeverity: minCommentSeverity,
@@ -468,10 +470,16 @@ class AnthropicProvider {
         });
     }
     buildSystemPrompt(request) {
+        var _a;
         const isUpdate = request.context.isUpdate;
+        const repoInstructions = (_a = request.context.repoInstructions) === null || _a === void 0 ? void 0 : _a.trim();
+        const repoBlock = repoInstructions
+            ? `\n\n------\nRepository-specific reviewer instructions (override the generic guidance above when they conflict):\n${repoInstructions}\n`
+            : '';
         return `
       ${prompts_1.baseCodeReviewPrompt}
       ${isUpdate ? prompts_1.updateReviewPrompt : ''}
+      ${repoBlock}
     `;
     }
     parseResponse(response) {
@@ -626,10 +634,16 @@ class GeminiProvider {
         });
     }
     buildSystemPrompt(request) {
+        var _a;
         const isUpdate = request.context.isUpdate;
+        const repoInstructions = (_a = request.context.repoInstructions) === null || _a === void 0 ? void 0 : _a.trim();
+        const repoBlock = repoInstructions
+            ? `\n\n------\nRepository-specific reviewer instructions (override the generic guidance above when they conflict):\n${repoInstructions}\n`
+            : '';
         return `
       ${prompts_1.baseCodeReviewPrompt}
       ${isUpdate ? prompts_1.updateReviewPrompt : ''}
+      ${repoBlock}
     `;
     }
     parseResponse(response) {
@@ -750,10 +764,16 @@ class OpenAIProvider {
         });
     }
     buildSystemPrompt(request) {
+        var _a;
         const isUpdate = request.context.isUpdate;
+        const repoInstructions = (_a = request.context.repoInstructions) === null || _a === void 0 ? void 0 : _a.trim();
+        const repoBlock = repoInstructions
+            ? `\n\n------\nRepository-specific reviewer instructions (override the generic guidance above when they conflict):\n${repoInstructions}\n`
+            : '';
         return `
       ${prompts_1.baseCodeReviewPrompt}
       ${isUpdate ? prompts_1.updateReviewPrompt : ''}
+      ${repoBlock}
     `;
     }
     parseResponse(response) {
@@ -1026,7 +1046,7 @@ class GitHubService {
             head: pr.head.sha,
         };
     }
-    async getFileContent(path, ref) {
+    async getFileContent(path, ref, opts) {
         try {
             const { data } = await this.octokit.repos.getContent({
                 owner: this.owner,
@@ -1040,7 +1060,12 @@ class GitHubService {
             throw new Error('Not a file');
         }
         catch (error) {
-            core.warning(`Failed to get content for ${path}: ${error}`);
+            if (opts === null || opts === void 0 ? void 0 : opts.quiet) {
+                core.debug(`File not found at ${path}: ${error}`);
+            }
+            else {
+                core.warning(`Failed to get content for ${path}: ${error}`);
+            }
             return '';
         }
     }
@@ -1300,6 +1325,7 @@ class ReviewService {
             approveConfidenceThreshold: threshold,
             projectContext: config.projectContext,
             contextFiles: config.contextFiles || ['package.json', 'README.md'],
+            instructionsFile: config.instructionsFile,
             providerLabel: config.providerLabel,
             modelLabel: config.modelLabel,
             minCommentSeverity: (_a = config.minCommentSeverity) !== null && _a !== void 0 ? _a : 'minor',
@@ -1335,6 +1361,7 @@ class ReviewService {
         }));
         // Get repository context (now using configured files)
         const contextFiles = await this.getRepositoryContext();
+        const repoInstructions = await this.getRepoInstructions(prDetails.head);
         // Perform AI review
         const review = await this.aiProvider.review({
             files: filesWithContent,
@@ -1350,6 +1377,7 @@ class ReviewService {
                 repository: (_a = process.env.GITHUB_REPOSITORY) !== null && _a !== void 0 ? _a : '',
                 owner: (_b = process.env.GITHUB_REPOSITORY_OWNER) !== null && _b !== void 0 ? _b : '',
                 projectContext: this.config.projectContext,
+                repoInstructions,
                 isUpdate,
             },
         });
@@ -1442,6 +1470,18 @@ class ReviewService {
     }
     commentKey(path, line, body) {
         return `${path} ${line} ${body.trim().replace(/\s+/g, ' ').toLowerCase()}`;
+    }
+    async getRepoInstructions(headRef) {
+        var _a;
+        const path = (_a = this.config.instructionsFile) === null || _a === void 0 ? void 0 : _a.trim();
+        if (!path)
+            return undefined;
+        const content = await this.githubService.getFileContent(path, headRef, { quiet: true });
+        if (content && content.trim().length > 0) {
+            core.info(`Loaded repo-specific reviewer instructions from ${path}`);
+            return content;
+        }
+        return undefined;
     }
     async getRepositoryContext() {
         const results = [];

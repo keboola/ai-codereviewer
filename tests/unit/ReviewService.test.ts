@@ -4,9 +4,13 @@ import { DiffService } from '../../src/services/DiffService';
 import { AIProvider, ReviewResponse } from '../../src/providers/AIProvider';
 
 class StubAIProvider implements AIProvider {
+  public lastRequest: any;
   constructor(private response: ReviewResponse) {}
   async initialize(): Promise<void> {}
-  async review(): Promise<ReviewResponse> { return this.response; }
+  async review(req: any): Promise<ReviewResponse> {
+    this.lastRequest = req;
+    return this.response;
+  }
 }
 
 function makeServices(aiResponse: ReviewResponse) {
@@ -32,6 +36,55 @@ function makeServices(aiResponse: ReviewResponse) {
 }
 
 describe('ReviewService', () => {
+  it('passes per-repo instructions from INSTRUCTIONS_FILE into the AI request', async () => {
+    const { githubService, diffService, aiProvider } = makeServices({
+      summary: 'sum',
+      suggestedAction: 'COMMENT',
+      confidence: 50,
+      lineComments: []
+    });
+
+    (githubService.getFileContent as jest.Mock).mockImplementation(
+      async (path: string) => path === '.github/ai-review.md' ? 'Be strict about SQL injection.' : 'content'
+    );
+
+    const service = new ReviewService(aiProvider as any, githubService, diffService, {
+      maxComments: 0,
+      approveReviews: true,
+      minCommentSeverity: 'minor',
+      instructionsFile: '.github/ai-review.md',
+    });
+
+    await service.performReview(1);
+
+    expect((aiProvider as StubAIProvider).lastRequest.context.repoInstructions)
+      .toContain('Be strict about SQL injection.');
+  });
+
+  it('skips repo instructions silently when the file is missing', async () => {
+    const { githubService, diffService, aiProvider } = makeServices({
+      summary: 'sum',
+      suggestedAction: 'COMMENT',
+      confidence: 50,
+      lineComments: []
+    });
+
+    (githubService.getFileContent as jest.Mock).mockImplementation(
+      async () => '' // empty content emulates "missing file"
+    );
+
+    const service = new ReviewService(aiProvider as any, githubService, diffService, {
+      maxComments: 0,
+      approveReviews: true,
+      minCommentSeverity: 'minor',
+      instructionsFile: '.github/ai-review.md',
+    });
+
+    await service.performReview(1);
+
+    expect((aiProvider as StubAIProvider).lastRequest.context.repoInstructions).toBeUndefined();
+  });
+
   it('drops comments below MIN_COMMENT_SEVERITY', async () => {
     const { githubService, diffService, aiProvider } = makeServices({
       summary: 'sum',

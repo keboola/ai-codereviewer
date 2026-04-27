@@ -57,7 +57,7 @@ export class GitHubService {
     };
   }
 
-  async getFileContent(path: string, ref?: string): Promise<string> {
+  async getFileContent(path: string, ref?: string, opts?: { quiet?: boolean }): Promise<string> {
     try {
       const { data } = await this.octokit.repos.getContent({
         owner: this.owner,
@@ -71,7 +71,11 @@ export class GitHubService {
       }
       throw new Error('Not a file');
     } catch (error) {
-      core.warning(`Failed to get content for ${path}: ${error}`);
+      if (opts?.quiet) {
+        core.debug(`File not found at ${path}: ${error}`);
+      } else {
+        core.warning(`Failed to get content for ${path}: ${error}`);
+      }
       return '';
     }
   }
