@@ -38,6 +38,15 @@ export interface ReviewRequest {
     projectContext?: string;
     repoInstructions?: string;
     isUpdate?: boolean;
+    agenticReview?: boolean;
+  };
+  /**
+   * When set, providers should drive a tool-use loop calling these
+   * functions instead of expecting the model to return JSON in one
+   * shot. The terminator tool is `submit_review`.
+   */
+  tools?: {
+    readFile: (path: string, reason: string) => Promise<string>;
   };
 }
 
@@ -58,6 +67,13 @@ export interface UsageReport {
   outputTokens?: number;
   cachedInputTokens?: number;
   totalTokens?: number;
+  /**
+   * Files the model fetched via read_file during agentic review.
+   * Empty / undefined for non-agentic single-shot reviews.
+   */
+  filesRead?: string[];
+  /** How many model turns the session took (1 for non-agentic). */
+  turns?: number;
 }
 
 export interface ReviewResponse {

@@ -3,6 +3,7 @@ import { GitHubService } from '../services/GitHubService';
 import { DiffService } from '../services/DiffService';
 import { CommentSeverity, ReviewResponse, UsageReport } from '../providers/AIProvider';
 import { loadRepoConfig, RepoConfig } from './RepoConfigLoader';
+import { executeReadFile, makeAgenticEnv } from './AgenticToolRunner';
 import { withRetry } from '../utils/retry';
 import * as core from '@actions/core';
 
@@ -25,6 +26,7 @@ export interface ReviewServiceConfig {
   instructionsUrl?: string;
   instructionsUrlToken?: string;
   configFile?: string;
+  agenticReview?: boolean;
   providerLabel?: string;
   modelLabel?: string;
   minCommentSeverity?: CommentSeverity;
@@ -55,6 +57,7 @@ export class ReviewService {
       instructionsUrl: config.instructionsUrl,
       instructionsUrlToken: config.instructionsUrlToken,
       configFile: config.configFile,
+      agenticReview: config.agenticReview ?? false,
       providerLabel: config.providerLabel,
       modelLabel: config.modelLabel,
       minCommentSeverity: config.minCommentSeverity ?? 'minor',
@@ -70,6 +73,7 @@ export class ReviewService {
     if (repo.project_context_file !== undefined) this.config.projectContextFile = repo.project_context_file;
     if (repo.project_context !== undefined) this.config.projectContext = repo.project_context;
     if (repo.context_files !== undefined) this.config.contextFiles = repo.context_files;
+    if (repo.agentic_review !== undefined) this.config.agenticReview = repo.agentic_review;
   }
 
   async performReview(prNumber: number): Promise<ReviewResponse> {
@@ -122,6 +126,20 @@ export class ReviewService {
 
     // Perform AI review with retry on transient errors
     const projectContext = await this.getProjectContext(prDetails.head);
+
+    const agenticReview = !!this.config.agenticReview;
+    const agenticEnv = agenticReview
+      ? makeAgenticEnv({
+          github: this.githubService,
+          ref: prDetails.head,
+          excludePatterns: this.diffService.getExcludePatterns(),
+        })
+      : undefined;
+
+    if (agenticReview) {
+      core.info(`Agentic review enabled — model can call read_file (max ${agenticEnv!.limits.maxFiles} files / ${agenticEnv!.limits.maxBytesPerFile} bytes each / ${agenticEnv!.limits.maxTurns} turns)`);
+    }
+
     const review = await withRetry(
       () => this.aiProvider.review({
         files: filesWithContent,
@@ -139,10 +157,24 @@ export class ReviewService {
           projectContext,
           repoInstructions,
           isUpdate,
+          agenticReview,
         },
+        tools: agenticEnv
+          ? {
+              readFile: (path: string, reason: string) => executeReadFile(agenticEnv, path, reason),
+            }
+          : undefined,
       }),
       { label: 'aiProvider.review' }
     );
+
+    // Annotate usage with the files actually read so the step summary picks it up
+    if (agenticEnv) {
+      review.usage = {
+        ...(review.usage ?? {}),
+        filesRead: Array.from(agenticEnv.filesRead.keys()),
+      };
+    }
 
     if (review.usage) {
       await this.writeUsageSummary(review.usage);
@@ -275,7 +307,7 @@ export class ReviewService {
     const model = this.config.modelLabel || '';
     const fmt = (n?: number) => (typeof n === 'number' ? n.toLocaleString() : '—');
     try {
-      await core.summary
+      const summary = core.summary
         .addHeading('AI review token usage', 3)
         .addTable([
           [
@@ -285,16 +317,30 @@ export class ReviewService {
             { data: 'Cached input', header: true },
             { data: 'Output', header: true },
             { data: 'Total', header: true },
+            { data: 'Turns', header: true },
           ],
-          [provider, model, fmt(usage.inputTokens), fmt(usage.cachedInputTokens), fmt(usage.outputTokens), fmt(usage.totalTokens)],
-        ])
-        .write();
+          [
+            provider, model,
+            fmt(usage.inputTokens), fmt(usage.cachedInputTokens),
+            fmt(usage.outputTokens), fmt(usage.totalTokens),
+            fmt(usage.turns),
+          ],
+        ]);
+      if (usage.filesRead && usage.filesRead.length > 0) {
+        summary
+          .addHeading('Files read agentically', 4)
+          .addList(usage.filesRead);
+      }
+      await summary.write();
     } catch (e) {
       core.debug(`Could not write summary: ${e}`);
     }
     core.info(
-      `Tokens — input: ${fmt(usage.inputTokens)} (cached: ${fmt(usage.cachedInputTokens)}), output: ${fmt(usage.outputTokens)}, total: ${fmt(usage.totalTokens)}`
+      `Tokens — input: ${fmt(usage.inputTokens)} (cached: ${fmt(usage.cachedInputTokens)}), output: ${fmt(usage.outputTokens)}, total: ${fmt(usage.totalTokens)}, turns: ${fmt(usage.turns)}`
     );
+    if (usage.filesRead && usage.filesRead.length > 0) {
+      core.info(`Agentic reads: ${usage.filesRead.join(', ')}`);
+    }
   }
 
   private async getRepoInstructions(headRef: string): Promise<string | undefined> {

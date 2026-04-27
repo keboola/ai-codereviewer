@@ -73,6 +73,7 @@ async function main() {
         const contextFiles = contextFilesInput ? contextFilesInput.split(',').map(f => f.trim()).filter(Boolean) : [];
         const excludePatterns = core.getInput('EXCLUDE_PATTERNS');
         const configFile = core.getInput('CONFIG_FILE');
+        const agenticReview = core.getBooleanInput('AGENTIC_REVIEW');
         // Initialize services
         const aiProvider = getProvider(provider);
         await aiProvider.initialize({
@@ -95,6 +96,7 @@ async function main() {
             instructionsUrl,
             instructionsUrlToken,
             configFile,
+            agenticReview,
             providerLabel: provider,
             modelLabel: model,
             minCommentSeverity: minCommentSeverity,
@@ -177,12 +179,22 @@ function buildSystemPrompt(request) {
     if (request.context.isUpdate) {
         sections.push(code_reviews_1.updateReviewPrompt);
     }
+    if (request.context.agenticReview) {
+        sections.push(agenticAddendum);
+    }
     const repoInstructions = (_a = request.context.repoInstructions) === null || _a === void 0 ? void 0 : _a.trim();
     if (repoInstructions) {
         sections.push(`------\nRepository-specific reviewer instructions (override the generic guidance above when they conflict):\n${repoInstructions}\n`);
     }
     return sections.join('\n');
 }
+const agenticAddendum = `------
+Agentic mode: you have two tools available.
+
+- \`read_file(path, reason)\`: read any file from the PR head. Use it to inspect helpers, types, configuration, test fixtures, etc. that are referenced by the diff but not included in it. Spend reads only on files that meaningfully change your review — there is a per-session budget.
+- \`submit_review(...)\`: terminator. Call this exactly once when you have all the context you need. The arguments are the review object. Do NOT emit free-form text in agentic mode — only tool calls are processed.
+
+Do not request files just to add color; request files when the diff alone leaves a real ambiguity (e.g. "this calls foo() but foo isn't shown — is it async? does it throw?"). Reading the same file twice is wasteful and will be refused.`;
 
 
 /***/ }),
@@ -476,6 +488,7 @@ __exportStar(__nccwpck_require__(264), exports);
 __exportStar(__nccwpck_require__(3278), exports);
 __exportStar(__nccwpck_require__(8466), exports);
 __exportStar(__nccwpck_require__(9978), exports);
+__exportStar(__nccwpck_require__(2130), exports);
 
 
 /***/ }),
@@ -534,6 +547,67 @@ exports.reviewResponseSchema = {
 
 /***/ }),
 
+/***/ 2130:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.agenticTools = exports.submitReviewTool = exports.readFileTool = void 0;
+const reviewSchema_1 = __nccwpck_require__(9978);
+/**
+ * Tool: read_file
+ *
+ * Lets the model fetch any file from the PR head during the review.
+ * Useful for inspecting referenced helpers, types, configuration,
+ * test fixtures, etc. that are NOT in the diff but are needed to
+ * judge the change correctly.
+ *
+ * The runner enforces:
+ *   - paths must be repo-relative, no `..`, no leading `/`
+ *   - the EXCLUDE_PATTERNS list also applies to reads
+ *   - per-session caps on file count and bytes per file
+ *   - already-read paths return a "you already read this" hint
+ */
+exports.readFileTool = {
+    name: 'read_file',
+    description: 'Read a file from the PR head. Use to inspect source files referenced by the diff (helpers, types, test fixtures, configs) that you need to review the change correctly. Do NOT use to fetch entire READMEs or large generated files. Each session has a budget; spend it on files that meaningfully change your review.',
+    parameters: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['path', 'reason'],
+        properties: {
+            path: {
+                type: 'string',
+                description: 'Repo-relative path, e.g. "src/utils/foo.ts". Must NOT start with "/" or contain "..".',
+            },
+            reason: {
+                type: 'string',
+                description: 'One short sentence on why this file is necessary to review the change. Helps audit unnecessary reads.',
+            },
+        },
+    },
+};
+/**
+ * Tool: submit_review
+ *
+ * Terminator. The model MUST call this exactly once to end the
+ * session. The arguments ARE the review — same shape as the JSON
+ * response in non-agentic mode (reviewResponseSchema).
+ *
+ * Calling submit_review is the only way to deliver the review;
+ * plain text output during agentic mode is ignored.
+ */
+exports.submitReviewTool = {
+    name: 'submit_review',
+    description: 'Submit your final code review. Call this exactly once when you have all the context you need. The arguments are the review object. Calling this terminates the session.',
+    parameters: reviewSchema_1.reviewResponseSchema,
+};
+exports.agenticTools = [exports.readFileTool, exports.submitReviewTool];
+
+
+/***/ }),
+
 /***/ 7773:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
@@ -580,6 +654,7 @@ exports.AnthropicProvider = void 0;
 const sdk_1 = __importDefault(__nccwpck_require__(121));
 const core = __importStar(__nccwpck_require__(7484));
 const prompts_1 = __nccwpck_require__(9493);
+const AgenticToolRunner_1 = __nccwpck_require__(2215);
 class AnthropicProvider {
     async initialize(config) {
         this.config = config;
@@ -588,22 +663,20 @@ class AnthropicProvider {
         });
     }
     async review(request) {
-        var _a, _b;
         core.debug(`Sending request to Anthropic with prompt structure: ${JSON.stringify(request, null, 2)}`);
+        if (request.context.agenticReview && request.tools) {
+            return this.reviewAgentic(request);
+        }
+        return this.reviewSingleShot(request);
+    }
+    async reviewSingleShot(request) {
+        var _a, _b;
         const systemPrompt = (0, prompts_1.buildSystemPrompt)(request);
         const response = await this.client.messages.create({
             model: this.config.model,
             max_tokens: 8000,
-            // Pass system as a content-block array so we can attach cache_control.
-            // The base reviewer instructions are identical across every PR review,
-            // so caching the system block trades one full-input billing for ~10%
-            // on every subsequent call within the cache window.
             system: [
-                {
-                    type: 'text',
-                    text: systemPrompt,
-                    cache_control: { type: 'ephemeral' },
-                },
+                { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
             ],
             messages: [
                 {
@@ -614,23 +687,101 @@ class AnthropicProvider {
             temperature: (_a = this.config.temperature) !== null && _a !== void 0 ? _a : 0.3,
         });
         if (response.stop_reason === 'max_tokens') {
-            core.warning('Anthropic response was truncated (stop_reason=max_tokens). Some line comments may have been lost — consider raising max_tokens or trimming context.');
+            core.warning('Anthropic response was truncated (stop_reason=max_tokens).');
         }
         const firstBlock = response.content[0];
         if (!firstBlock || firstBlock.type !== 'text') {
             core.error(`Anthropic returned a non-text first content block (type=${(_b = firstBlock === null || firstBlock === void 0 ? void 0 : firstBlock.type) !== null && _b !== void 0 ? _b : 'undefined'})`);
-            return {
-                summary: 'Anthropic returned a non-text response',
-                lineComments: [],
-                suggestedAction: 'COMMENT',
-                confidence: 0,
-            };
+            return this.fallback('Anthropic returned a non-text response');
         }
         core.debug(`Raw Anthropic response: ${JSON.stringify(firstBlock.text, null, 2)}`);
-        const parsedResponse = this.parseResponse(response);
-        parsedResponse.usage = this.extractUsage(response);
-        core.info(`Parsed response: ${JSON.stringify(parsedResponse, null, 2)}`);
-        return parsedResponse;
+        const parsed = this.parseSingleShot(response);
+        parsed.usage = this.mergeUsage(undefined, this.extractUsage(response), 1);
+        core.info(`Parsed response: ${JSON.stringify(parsed, null, 2)}`);
+        return parsed;
+    }
+    async reviewAgentic(request) {
+        var _a;
+        const systemPrompt = (0, prompts_1.buildSystemPrompt)(request);
+        const messages = [
+            { role: 'user', content: (0, prompts_1.buildUserPayload)(request) },
+        ];
+        let aggregateUsage;
+        for (let turn = 1; turn <= AgenticToolRunner_1.DEFAULT_AGENTIC_LIMITS.maxTurns; turn++) {
+            const response = await this.client.messages.create({
+                model: this.config.model,
+                max_tokens: 8000,
+                system: [
+                    { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
+                ],
+                tools: [
+                    { name: prompts_1.readFileTool.name, description: prompts_1.readFileTool.description, input_schema: prompts_1.readFileTool.parameters },
+                    { name: prompts_1.submitReviewTool.name, description: prompts_1.submitReviewTool.description, input_schema: prompts_1.submitReviewTool.parameters },
+                ],
+                messages,
+                temperature: (_a = this.config.temperature) !== null && _a !== void 0 ? _a : 0.3,
+            });
+            aggregateUsage = this.mergeUsage(aggregateUsage, this.extractUsage(response), turn);
+            if (response.stop_reason === 'max_tokens') {
+                core.warning(`Anthropic turn ${turn} truncated (stop_reason=max_tokens).`);
+            }
+            const toolUses = response.content.filter((b) => b.type === 'tool_use');
+            const submit = toolUses.find((b) => b.name === 'submit_review');
+            if (submit) {
+                const review = this.parseSubmitInput(submit.input);
+                review.usage = aggregateUsage;
+                core.info(`Agentic review submitted on turn ${turn}`);
+                return review;
+            }
+            const reads = toolUses.filter((b) => b.name === 'read_file');
+            if (reads.length === 0) {
+                core.warning(`Anthropic turn ${turn} produced no tool call; ending loop`);
+                break;
+            }
+            messages.push({ role: 'assistant', content: response.content });
+            const toolResults = await Promise.all(reads.map(async (b) => {
+                var _a, _b, _c;
+                const input = ((_a = b.input) !== null && _a !== void 0 ? _a : {});
+                const content = await request.tools.readFile((_b = input.path) !== null && _b !== void 0 ? _b : '', (_c = input.reason) !== null && _c !== void 0 ? _c : '');
+                return {
+                    type: 'tool_result',
+                    tool_use_id: b.id,
+                    content,
+                };
+            }));
+            messages.push({ role: 'user', content: toolResults });
+        }
+        core.warning(`Agentic loop hit max turns (${AgenticToolRunner_1.DEFAULT_AGENTIC_LIMITS.maxTurns}) without submit_review`);
+        const fb = this.fallback('Agentic loop did not call submit_review within budget');
+        fb.usage = aggregateUsage;
+        return fb;
+    }
+    parseSingleShot(response) {
+        try {
+            const content = JSON.parse(response.content[0].text);
+            return {
+                summary: content.summary,
+                lineComments: content.comments,
+                suggestedAction: content.suggestedAction,
+                confidence: content.confidence,
+            };
+        }
+        catch (error) {
+            core.error(`Failed to parse Anthropic response: ${error}`);
+            return this.fallback('Failed to parse AI response');
+        }
+    }
+    parseSubmitInput(input) {
+        var _a, _b, _c, _d;
+        return {
+            summary: (_a = input === null || input === void 0 ? void 0 : input.summary) !== null && _a !== void 0 ? _a : '',
+            lineComments: (_b = input === null || input === void 0 ? void 0 : input.comments) !== null && _b !== void 0 ? _b : [],
+            suggestedAction: (_c = input === null || input === void 0 ? void 0 : input.suggestedAction) !== null && _c !== void 0 ? _c : 'COMMENT',
+            confidence: (_d = input === null || input === void 0 ? void 0 : input.confidence) !== null && _d !== void 0 ? _d : 0,
+        };
+    }
+    fallback(summary) {
+        return { summary, lineComments: [], suggestedAction: 'COMMENT', confidence: 0 };
     }
     extractUsage(response) {
         var _a, _b, _c, _d;
@@ -645,28 +796,20 @@ class AnthropicProvider {
             totalTokens: inputTokens + ((_d = u.output_tokens) !== null && _d !== void 0 ? _d : 0),
         };
     }
-    parseResponse(response) {
-        try {
-            const content = JSON.parse(response.content[0].text);
-            return {
-                summary: content.summary,
-                lineComments: content.comments,
-                suggestedAction: content.suggestedAction,
-                confidence: content.confidence,
-            };
-        }
-        catch (error) {
-            core.error(`Failed to parse Anthropic response: ${error}`);
-            return {
-                summary: 'Failed to parse AI response',
-                lineComments: [],
-                suggestedAction: 'COMMENT',
-                confidence: 0,
-            };
-        }
+    mergeUsage(prev, next, turns) {
+        const sum = (a, b) => (a !== null && a !== void 0 ? a : 0) + (b !== null && b !== void 0 ? b : 0);
+        return {
+            inputTokens: sum(prev === null || prev === void 0 ? void 0 : prev.inputTokens, next === null || next === void 0 ? void 0 : next.inputTokens),
+            outputTokens: sum(prev === null || prev === void 0 ? void 0 : prev.outputTokens, next === null || next === void 0 ? void 0 : next.outputTokens),
+            cachedInputTokens: sum(prev === null || prev === void 0 ? void 0 : prev.cachedInputTokens, next === null || next === void 0 ? void 0 : next.cachedInputTokens),
+            totalTokens: sum(prev === null || prev === void 0 ? void 0 : prev.totalTokens, next === null || next === void 0 ? void 0 : next.totalTokens),
+            turns,
+        };
     }
 }
 exports.AnthropicProvider = AnthropicProvider;
+// Tools array kept for symmetry with other providers; Anthropic uses individual entries above
+void prompts_1.agenticTools;
 
 
 /***/ }),
@@ -715,77 +858,115 @@ const generative_ai_1 = __nccwpck_require__(7656);
 const core = __importStar(__nccwpck_require__(7484));
 const jsonrepair_1 = __nccwpck_require__(2555);
 const prompts_1 = __nccwpck_require__(9493);
+const AgenticToolRunner_1 = __nccwpck_require__(2215);
 const geminiSchemaAdapter_1 = __nccwpck_require__(2975);
-// Single source of truth for the response shape lives in
-// src/prompts/reviewSchema.ts (JSON Schema). Convert it once at module
-// load to Gemini's SchemaType-flavored shape — keeps OpenAI, Gemini, and
-// any future provider schema-aligned automatically.
 const geminiResponseSchema = (0, geminiSchemaAdapter_1.toGeminiSchema)(prompts_1.reviewResponseSchema);
+const geminiSubmitParams = (0, geminiSchemaAdapter_1.toGeminiSchema)(prompts_1.submitReviewTool.parameters);
+const geminiReadFileParams = (0, geminiSchemaAdapter_1.toGeminiSchema)(prompts_1.readFileTool.parameters);
 class GeminiProvider {
     async initialize(config) {
         this.config = config;
         this.client = new generative_ai_1.GoogleGenerativeAI(config.apiKey);
-        this.model = this.client.getGenerativeModel({
+        this.singleShotModel = this.client.getGenerativeModel({
             model: this.config.model,
             generationConfig: {
                 responseMimeType: 'application/json',
                 responseSchema: geminiResponseSchema,
             },
         });
+        this.agenticModel = this.client.getGenerativeModel({
+            model: this.config.model,
+            tools: [
+                {
+                    functionDeclarations: [
+                        { name: prompts_1.readFileTool.name, description: prompts_1.readFileTool.description, parameters: geminiReadFileParams },
+                        { name: prompts_1.submitReviewTool.name, description: prompts_1.submitReviewTool.description, parameters: geminiSubmitParams },
+                    ],
+                },
+            ],
+            toolConfig: {
+                functionCallingConfig: { mode: generative_ai_1.FunctionCallingMode.ANY },
+            },
+        });
     }
     cleanJsonResponse(response) {
         const possiblePrefixes = ["ny\n```json", "```json"];
         const suffix = "```";
-        // Check the suffix once first.
-        // If it doesn't end with the suffix, none of the prefix checks will
-        // result in a successfully unwrapped block according to the rules.
-        if (!response.endsWith(suffix)) {
+        if (!response.endsWith(suffix))
             return response;
-        }
-        // Iterate through the known prefixes
         for (const prefix of possiblePrefixes) {
             if (response.startsWith(prefix)) {
-                // Found a matching prefix AND we already know it ends with the suffix.
                 const startIndex = prefix.length;
-                // Slice from the end of the prefix to the start of the suffix.
-                // Ensure the string is long enough to theoretically contain both,
-                // although startsWith/endsWith should largely guarantee this.
                 if (response.length >= startIndex + suffix.length) {
-                    const contentSlice = response.substring(startIndex, response.length - suffix.length);
-                    // Clean whitespace from the extracted part and return
-                    return contentSlice.trim();
+                    return response.substring(startIndex, response.length - suffix.length).trim();
                 }
-                else {
-                    // String ends with suffix and starts with prefix, but is too short. Malformed.
-                    return response; // Return original as it's not validly wrapped
-                }
+                return response;
             }
         }
-        // If the loop finishes, it means the string ended with the suffix,
-        // but did not start with any of the known prefixes.
         return response;
     }
     async review(request) {
         core.debug(`Sending request to Gemini with prompt structure: ${JSON.stringify(request, null, 2)}`);
-        const result = await this.model.generateContent({
+        if (request.context.agenticReview && request.tools) {
+            return this.reviewAgentic(request);
+        }
+        return this.reviewSingleShot(request);
+    }
+    async reviewSingleShot(request) {
+        const result = await this.singleShotModel.generateContent({
             systemInstruction: (0, prompts_1.buildSystemPrompt)(request),
-            contents: [
-                {
-                    role: 'user',
-                    parts: [
-                        {
-                            text: (0, prompts_1.buildUserPayload)(request),
-                        }
-                    ]
-                }
-            ]
+            contents: [{ role: 'user', parts: [{ text: (0, prompts_1.buildUserPayload)(request) }] }],
         });
         const response = result.response;
         core.info(`Raw Gemini response: ${JSON.stringify(response.text(), null, 2)}`);
-        const parsedResponse = this.parseResponse(response);
-        parsedResponse.usage = this.extractUsage(response);
-        core.info(`Parsed response: ${JSON.stringify(parsedResponse, null, 2)}`);
-        return parsedResponse;
+        const parsed = this.parseSingleShot(response);
+        parsed.usage = this.mergeUsage(undefined, this.extractUsage(response), 1);
+        return parsed;
+    }
+    async reviewAgentic(request) {
+        var _a, _b, _c, _d;
+        const systemPrompt = (0, prompts_1.buildSystemPrompt)(request);
+        const contents = [
+            { role: 'user', parts: [{ text: (0, prompts_1.buildUserPayload)(request) }] },
+        ];
+        let aggregateUsage;
+        for (let turn = 1; turn <= AgenticToolRunner_1.DEFAULT_AGENTIC_LIMITS.maxTurns; turn++) {
+            const result = await this.agenticModel.generateContent({
+                systemInstruction: systemPrompt,
+                contents,
+            });
+            const response = result.response;
+            aggregateUsage = this.mergeUsage(aggregateUsage, this.extractUsage(response), turn);
+            const parts = (_d = (_c = (_b = (_a = response.candidates) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.content) === null || _c === void 0 ? void 0 : _c.parts) !== null && _d !== void 0 ? _d : [];
+            const calls = parts.filter((p) => p.functionCall).map((p) => p.functionCall);
+            const submit = calls.find((c) => c.name === 'submit_review');
+            if (submit) {
+                const review = this.parseSubmitArgs(submit.args);
+                review.usage = aggregateUsage;
+                core.info(`Agentic review submitted on turn ${turn}`);
+                return review;
+            }
+            const reads = calls.filter((c) => c.name === 'read_file');
+            if (reads.length === 0) {
+                core.warning(`Gemini turn ${turn} produced no tool call; ending loop`);
+                break;
+            }
+            contents.push({ role: 'model', parts: parts });
+            const responses = await Promise.all(reads.map(async (c) => {
+                var _a, _b, _c;
+                const args = (_a = c.args) !== null && _a !== void 0 ? _a : {};
+                const content = await request.tools.readFile((_b = args.path) !== null && _b !== void 0 ? _b : '', (_c = args.reason) !== null && _c !== void 0 ? _c : '');
+                return { name: 'read_file', response: { content } };
+            }));
+            contents.push({
+                role: 'user',
+                parts: responses.map(r => ({ functionResponse: r })),
+            });
+        }
+        core.warning(`Agentic loop hit max turns without submit_review`);
+        const fb = this.fallback('Agentic loop did not call submit_review within budget');
+        fb.usage = aggregateUsage;
+        return fb;
     }
     extractUsage(response) {
         const u = response.usageMetadata;
@@ -798,7 +979,17 @@ class GeminiProvider {
             totalTokens: u.totalTokenCount,
         };
     }
-    parseResponse(response) {
+    mergeUsage(prev, next, turns) {
+        const sum = (a, b) => (a !== null && a !== void 0 ? a : 0) + (b !== null && b !== void 0 ? b : 0);
+        return {
+            inputTokens: sum(prev === null || prev === void 0 ? void 0 : prev.inputTokens, next === null || next === void 0 ? void 0 : next.inputTokens),
+            outputTokens: sum(prev === null || prev === void 0 ? void 0 : prev.outputTokens, next === null || next === void 0 ? void 0 : next.outputTokens),
+            cachedInputTokens: sum(prev === null || prev === void 0 ? void 0 : prev.cachedInputTokens, next === null || next === void 0 ? void 0 : next.cachedInputTokens),
+            totalTokens: sum(prev === null || prev === void 0 ? void 0 : prev.totalTokens, next === null || next === void 0 ? void 0 : next.totalTokens),
+            turns,
+        };
+    }
+    parseSingleShot(response) {
         try {
             const content = JSON.parse((0, jsonrepair_1.jsonrepair)(this.cleanJsonResponse(response.text())));
             return {
@@ -810,13 +1001,20 @@ class GeminiProvider {
         }
         catch (error) {
             core.error(`Failed to parse Gemini response: ${error}`);
-            return {
-                summary: 'Failed to parse AI response',
-                lineComments: [],
-                suggestedAction: 'COMMENT',
-                confidence: 0,
-            };
+            return this.fallback('Failed to parse AI response');
         }
+    }
+    parseSubmitArgs(args) {
+        var _a, _b, _c, _d;
+        return {
+            summary: (_a = args === null || args === void 0 ? void 0 : args.summary) !== null && _a !== void 0 ? _a : '',
+            lineComments: (_b = args === null || args === void 0 ? void 0 : args.comments) !== null && _b !== void 0 ? _b : [],
+            suggestedAction: (_c = args === null || args === void 0 ? void 0 : args.suggestedAction) !== null && _c !== void 0 ? _c : 'COMMENT',
+            confidence: (_d = args === null || args === void 0 ? void 0 : args.confidence) !== null && _d !== void 0 ? _d : 0,
+        };
+    }
+    fallback(summary) {
+        return { summary, lineComments: [], suggestedAction: 'COMMENT', confidence: 0 };
     }
 }
 exports.GeminiProvider = GeminiProvider;
@@ -871,6 +1069,7 @@ const openai_1 = __importDefault(__nccwpck_require__(2583));
 const jsonrepair_1 = __nccwpck_require__(2555);
 const core = __importStar(__nccwpck_require__(7484));
 const prompts_1 = __nccwpck_require__(9493);
+const AgenticToolRunner_1 = __nccwpck_require__(2215);
 class OpenAIProvider {
     async initialize(config) {
         this.config = config;
@@ -883,26 +1082,79 @@ class OpenAIProvider {
     }
     async review(request) {
         core.info(`Sending request to OpenAI with prompt structure: ${JSON.stringify(request, null, 2)}`);
+        if (request.context.agenticReview && request.tools) {
+            return this.reviewAgentic(request);
+        }
+        return this.reviewSingleShot(request);
+    }
+    async reviewSingleShot(request) {
         const response = await this.client.chat.completions.create({
             model: this.config.model,
             messages: [
-                {
-                    role: this.getSystemPromptRole(),
-                    content: (0, prompts_1.buildSystemPrompt)(request),
-                },
-                {
-                    role: 'user',
-                    content: (0, prompts_1.buildUserPayload)(request),
-                },
+                { role: this.getSystemPromptRole(), content: (0, prompts_1.buildSystemPrompt)(request) },
+                { role: 'user', content: (0, prompts_1.buildUserPayload)(request) },
             ],
             temperature: this.getTemperature(),
             response_format: this.responseFormat(),
         });
         core.debug(`Raw OpenAI response: ${JSON.stringify(response.choices[0].message.content, null, 2)}`);
-        const parsedResponse = this.parseResponse(response);
-        parsedResponse.usage = this.extractUsage(response);
-        core.info(`Parsed response: ${JSON.stringify(parsedResponse, null, 2)}`);
-        return parsedResponse;
+        const parsed = this.parseSingleShot(response);
+        parsed.usage = this.mergeUsage(undefined, this.extractUsage(response), 1);
+        return parsed;
+    }
+    async reviewAgentic(request) {
+        var _a, _b, _c, _d;
+        const messages = [
+            { role: this.getSystemPromptRole(), content: (0, prompts_1.buildSystemPrompt)(request) },
+            { role: 'user', content: (0, prompts_1.buildUserPayload)(request) },
+        ];
+        const tools = [
+            { type: 'function', function: { name: prompts_1.readFileTool.name, description: prompts_1.readFileTool.description, parameters: prompts_1.readFileTool.parameters } },
+            { type: 'function', function: { name: prompts_1.submitReviewTool.name, description: prompts_1.submitReviewTool.description, parameters: prompts_1.submitReviewTool.parameters } },
+        ];
+        let aggregateUsage;
+        for (let turn = 1; turn <= AgenticToolRunner_1.DEFAULT_AGENTIC_LIMITS.maxTurns; turn++) {
+            const response = await this.client.chat.completions.create({
+                model: this.config.model,
+                messages,
+                tools,
+                tool_choice: 'auto',
+                temperature: this.getTemperature(),
+            });
+            aggregateUsage = this.mergeUsage(aggregateUsage, this.extractUsage(response), turn);
+            const message = (_a = response.choices[0]) === null || _a === void 0 ? void 0 : _a.message;
+            if (!message)
+                break;
+            const toolCalls = (_b = message.tool_calls) !== null && _b !== void 0 ? _b : [];
+            const submit = toolCalls.find(tc => tc.type === 'function' && tc.function.name === 'submit_review');
+            if (submit && submit.type === 'function') {
+                const review = this.parseSubmitArguments(submit.function.arguments);
+                review.usage = aggregateUsage;
+                core.info(`Agentic review submitted on turn ${turn}`);
+                return review;
+            }
+            const reads = toolCalls.filter(tc => tc.type === 'function' && tc.function.name === 'read_file');
+            if (reads.length === 0) {
+                core.warning(`OpenAI turn ${turn} produced no tool call; ending loop`);
+                break;
+            }
+            messages.push(message);
+            for (const read of reads) {
+                if (read.type !== 'function')
+                    continue;
+                let args = {};
+                try {
+                    args = JSON.parse(read.function.arguments);
+                }
+                catch { /* keep empty */ }
+                const content = await request.tools.readFile((_c = args.path) !== null && _c !== void 0 ? _c : '', (_d = args.reason) !== null && _d !== void 0 ? _d : '');
+                messages.push({ role: 'tool', tool_call_id: read.id, content });
+            }
+        }
+        core.warning(`Agentic loop hit max turns without submit_review`);
+        const fb = this.fallback('Agentic loop did not call submit_review within budget');
+        fb.usage = aggregateUsage;
+        return fb;
     }
     extractUsage(response) {
         var _a;
@@ -916,7 +1168,17 @@ class OpenAIProvider {
             totalTokens: u.total_tokens,
         };
     }
-    parseResponse(response) {
+    mergeUsage(prev, next, turns) {
+        const sum = (a, b) => (a !== null && a !== void 0 ? a : 0) + (b !== null && b !== void 0 ? b : 0);
+        return {
+            inputTokens: sum(prev === null || prev === void 0 ? void 0 : prev.inputTokens, next === null || next === void 0 ? void 0 : next.inputTokens),
+            outputTokens: sum(prev === null || prev === void 0 ? void 0 : prev.outputTokens, next === null || next === void 0 ? void 0 : next.outputTokens),
+            cachedInputTokens: sum(prev === null || prev === void 0 ? void 0 : prev.cachedInputTokens, next === null || next === void 0 ? void 0 : next.cachedInputTokens),
+            totalTokens: sum(prev === null || prev === void 0 ? void 0 : prev.totalTokens, next === null || next === void 0 ? void 0 : next.totalTokens),
+            turns,
+        };
+    }
+    parseSingleShot(response) {
         var _a;
         const rawContent = (_a = response.choices[0].message.content) !== null && _a !== void 0 ? _a : '{}';
         try {
@@ -930,13 +1192,27 @@ class OpenAIProvider {
         }
         catch (error) {
             core.error(`Failed to parse OpenAI response: ${error}`);
+            return this.fallback('Failed to parse AI response');
+        }
+    }
+    parseSubmitArguments(rawArgs) {
+        var _a, _b, _c, _d;
+        try {
+            const args = JSON.parse((0, jsonrepair_1.jsonrepair)(rawArgs));
             return {
-                summary: 'Failed to parse AI response',
-                lineComments: [],
-                suggestedAction: 'COMMENT',
-                confidence: 0,
+                summary: (_a = args.summary) !== null && _a !== void 0 ? _a : '',
+                lineComments: (_b = args.comments) !== null && _b !== void 0 ? _b : [],
+                suggestedAction: (_c = args.suggestedAction) !== null && _c !== void 0 ? _c : 'COMMENT',
+                confidence: (_d = args.confidence) !== null && _d !== void 0 ? _d : 0,
             };
         }
+        catch (error) {
+            core.error(`Failed to parse submit_review arguments: ${error}`);
+            return this.fallback('Failed to parse submit_review arguments');
+        }
+    }
+    fallback(summary) {
+        return { summary, lineComments: [], suggestedAction: 'COMMENT', confidence: 0 };
     }
     extractJson(raw) {
         const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
@@ -967,12 +1243,10 @@ class OpenAIProvider {
         };
     }
     getSystemPromptRole() {
-        // o1 doesn't support 'system' role
         return this.isO1Mini() ? 'user' : 'system';
     }
     getTemperature() {
         var _a;
-        // o1 only supports 1.0
         return this.isO1Mini() ? 1 : (_a = this.config.temperature) !== null && _a !== void 0 ? _a : 0.3;
     }
 }
@@ -1024,6 +1298,110 @@ function toGeminiSchema(node) {
         out.enum = [...node.enum];
     }
     return out;
+}
+
+
+/***/ }),
+
+/***/ 2215:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.DEFAULT_AGENTIC_LIMITS = void 0;
+exports.makeAgenticEnv = makeAgenticEnv;
+exports.executeReadFile = executeReadFile;
+const core = __importStar(__nccwpck_require__(7484));
+const minimatch_1 = __nccwpck_require__(6507);
+exports.DEFAULT_AGENTIC_LIMITS = {
+    maxFiles: 20,
+    maxBytesPerFile: 200000,
+    maxTurns: 8,
+};
+function makeAgenticEnv(opts) {
+    var _a;
+    return {
+        github: opts.github,
+        ref: opts.ref,
+        excludePatterns: opts.excludePatterns,
+        limits: { ...exports.DEFAULT_AGENTIC_LIMITS, ...((_a = opts.limits) !== null && _a !== void 0 ? _a : {}) },
+        filesRead: new Map(),
+    };
+}
+/**
+ * Execute the read_file tool. Returns either the file contents or a
+ * short error message that the model can act on. Never throws.
+ *
+ * Path safety: rejects absolute paths, parent traversal (`..`),
+ * empty paths, and anything matching EXCLUDE_PATTERNS. Caps total
+ * file count and per-file size from `limits`.
+ */
+async function executeReadFile(env, path, reason) {
+    if (!path || typeof path !== 'string') {
+        return 'error: read_file requires a non-empty "path" argument';
+    }
+    const cleanPath = path.trim();
+    if (cleanPath.startsWith('/') || cleanPath.includes('..')) {
+        return `error: invalid path '${cleanPath}' — must be a repo-relative path without leading "/" or ".."`;
+    }
+    if (env.filesRead.has(cleanPath)) {
+        const prevSize = env.filesRead.get(cleanPath);
+        return `error: '${cleanPath}' was already read in this session (${prevSize} bytes); reuse the previous result instead of re-reading`;
+    }
+    if (env.excludePatterns.some(p => (0, minimatch_1.minimatch)(cleanPath, p, { matchBase: true, dot: true }))) {
+        return `error: '${cleanPath}' matches EXCLUDE_PATTERNS — not readable in this session`;
+    }
+    if (env.filesRead.size >= env.limits.maxFiles) {
+        return `error: read budget exhausted — already read ${env.filesRead.size} files (limit ${env.limits.maxFiles}). Submit your review now.`;
+    }
+    const content = await env.github.getFileContent(cleanPath, env.ref, { quiet: true });
+    if (!content) {
+        env.filesRead.set(cleanPath, 0);
+        return `error: '${cleanPath}' not found at PR head`;
+    }
+    const cap = env.limits.maxBytesPerFile;
+    if (content.length > cap) {
+        env.filesRead.set(cleanPath, cap);
+        core.info(`[agentic] read_file ${cleanPath} (${content.length} bytes, truncated to ${cap}) — ${reason}`);
+        return `[truncated to ${cap} of ${content.length} bytes]\n${content.slice(0, cap)}`;
+    }
+    env.filesRead.set(cleanPath, content.length);
+    core.info(`[agentic] read_file ${cleanPath} (${content.length} bytes) — ${reason}`);
+    return content;
 }
 
 
@@ -1082,6 +1460,9 @@ class DiffService {
     }
     setExcludePatterns(excludePatterns) {
         this.excludePatterns = this.parsePatterns(excludePatterns);
+    }
+    getExcludePatterns() {
+        return [...this.excludePatterns];
     }
     parsePatterns(excludePatterns) {
         return excludePatterns
@@ -1577,6 +1958,9 @@ async function loadRepoConfig(github, path, headRef) {
     else if (raw.context_files !== undefined) {
         core.warning(`${path}: ignoring context_files (must be a list of strings or a comma-separated string)`);
     }
+    if (typeof raw.agentic_review === 'boolean') {
+        cfg.agentic_review = raw.agentic_review;
+    }
     const overrides = Object.keys(cfg);
     if (overrides.length > 0) {
         core.info(`Loaded per-repo config from ${path}; overriding: ${overrides.join(', ')}`);
@@ -1631,6 +2015,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.ReviewService = void 0;
 const RepoConfigLoader_1 = __nccwpck_require__(4885);
+const AgenticToolRunner_1 = __nccwpck_require__(2215);
 const retry_1 = __nccwpck_require__(1001);
 const core = __importStar(__nccwpck_require__(7484));
 const SEVERITY_ORDER = ['nit', 'minor', 'major', 'blocker'];
@@ -1642,7 +2027,7 @@ function severityRank(s) {
 }
 class ReviewService {
     constructor(aiProvider, githubService, diffService, config) {
-        var _a, _b;
+        var _a, _b, _c;
         this.aiProvider = aiProvider;
         this.githubService = githubService;
         this.diffService = diffService;
@@ -1661,9 +2046,10 @@ class ReviewService {
             instructionsUrl: config.instructionsUrl,
             instructionsUrlToken: config.instructionsUrlToken,
             configFile: config.configFile,
+            agenticReview: (_b = config.agenticReview) !== null && _b !== void 0 ? _b : false,
             providerLabel: config.providerLabel,
             modelLabel: config.modelLabel,
-            minCommentSeverity: (_b = config.minCommentSeverity) !== null && _b !== void 0 ? _b : 'minor',
+            minCommentSeverity: (_c = config.minCommentSeverity) !== null && _c !== void 0 ? _c : 'minor',
         };
     }
     applyRepoConfig(repo) {
@@ -1683,9 +2069,11 @@ class ReviewService {
             this.config.projectContext = repo.project_context;
         if (repo.context_files !== undefined)
             this.config.contextFiles = repo.context_files;
+        if (repo.agentic_review !== undefined)
+            this.config.agenticReview = repo.agentic_review;
     }
     async performReview(prNumber) {
-        var _a, _b, _c;
+        var _a, _b, _c, _d;
         core.info(`Starting review for PR #${prNumber}`);
         // Get PR details
         const prDetails = await this.githubService.getPRDetails(prNumber);
@@ -1725,6 +2113,17 @@ class ReviewService {
         const repoInstructions = await this.getRepoInstructions(prDetails.head);
         // Perform AI review with retry on transient errors
         const projectContext = await this.getProjectContext(prDetails.head);
+        const agenticReview = !!this.config.agenticReview;
+        const agenticEnv = agenticReview
+            ? (0, AgenticToolRunner_1.makeAgenticEnv)({
+                github: this.githubService,
+                ref: prDetails.head,
+                excludePatterns: this.diffService.getExcludePatterns(),
+            })
+            : undefined;
+        if (agenticReview) {
+            core.info(`Agentic review enabled — model can call read_file (max ${agenticEnv.limits.maxFiles} files / ${agenticEnv.limits.maxBytesPerFile} bytes each / ${agenticEnv.limits.maxTurns} turns)`);
+        }
         const review = await (0, retry_1.withRetry)(() => {
             var _a, _b;
             return this.aiProvider.review({
@@ -1743,15 +2142,28 @@ class ReviewService {
                     projectContext,
                     repoInstructions,
                     isUpdate,
+                    agenticReview,
                 },
+                tools: agenticEnv
+                    ? {
+                        readFile: (path, reason) => (0, AgenticToolRunner_1.executeReadFile)(agenticEnv, path, reason),
+                    }
+                    : undefined,
             });
         }, { label: 'aiProvider.review' });
+        // Annotate usage with the files actually read so the step summary picks it up
+        if (agenticEnv) {
+            review.usage = {
+                ...((_a = review.usage) !== null && _a !== void 0 ? _a : {}),
+                filesRead: Array.from(agenticEnv.filesRead.keys()),
+            };
+        }
         if (review.usage) {
             await this.writeUsageSummary(review.usage);
         }
         // Add model name to summary
-        const provider = ((_a = this.config.providerLabel) === null || _a === void 0 ? void 0 : _a.toUpperCase())
-            || ((_b = process.env.INPUT_AI_PROVIDER) === null || _b === void 0 ? void 0 : _b.toUpperCase())
+        const provider = ((_b = this.config.providerLabel) === null || _b === void 0 ? void 0 : _b.toUpperCase())
+            || ((_c = process.env.INPUT_AI_PROVIDER) === null || _c === void 0 ? void 0 : _c.toUpperCase())
             || 'AI';
         const model = this.config.modelLabel
             || process.env.INPUT_AI_MODEL
@@ -1759,7 +2171,7 @@ class ReviewService {
         const modelInfo = `_Code review performed by \`${provider}${model ? ` - ${model}` : ''}\`._`;
         review.summary = `${review.summary}\n\n------\n\n${modelInfo}`;
         const validLinesByPath = new Map(modifiedFiles.map(f => [f.path, f.validRightLines]));
-        const filteredBySeverity = this.filterBySeverity((_c = review.lineComments) !== null && _c !== void 0 ? _c : []);
+        const filteredBySeverity = this.filterBySeverity((_d = review.lineComments) !== null && _d !== void 0 ? _d : []);
         const dedupedComments = this.dedupeAgainstPrevious(filteredBySeverity, previousReviews);
         const validatedComments = this.dropInvalidLines(dedupedComments, validLinesByPath);
         const sortedComments = this.sortBySeverityDesc(validatedComments);
@@ -1844,7 +2256,7 @@ class ReviewService {
         const model = this.config.modelLabel || '';
         const fmt = (n) => (typeof n === 'number' ? n.toLocaleString() : '—');
         try {
-            await core.summary
+            const summary = core.summary
                 .addHeading('AI review token usage', 3)
                 .addTable([
                 [
@@ -1854,15 +2266,29 @@ class ReviewService {
                     { data: 'Cached input', header: true },
                     { data: 'Output', header: true },
                     { data: 'Total', header: true },
+                    { data: 'Turns', header: true },
                 ],
-                [provider, model, fmt(usage.inputTokens), fmt(usage.cachedInputTokens), fmt(usage.outputTokens), fmt(usage.totalTokens)],
-            ])
-                .write();
+                [
+                    provider, model,
+                    fmt(usage.inputTokens), fmt(usage.cachedInputTokens),
+                    fmt(usage.outputTokens), fmt(usage.totalTokens),
+                    fmt(usage.turns),
+                ],
+            ]);
+            if (usage.filesRead && usage.filesRead.length > 0) {
+                summary
+                    .addHeading('Files read agentically', 4)
+                    .addList(usage.filesRead);
+            }
+            await summary.write();
         }
         catch (e) {
             core.debug(`Could not write summary: ${e}`);
         }
-        core.info(`Tokens — input: ${fmt(usage.inputTokens)} (cached: ${fmt(usage.cachedInputTokens)}), output: ${fmt(usage.outputTokens)}, total: ${fmt(usage.totalTokens)}`);
+        core.info(`Tokens — input: ${fmt(usage.inputTokens)} (cached: ${fmt(usage.cachedInputTokens)}), output: ${fmt(usage.outputTokens)}, total: ${fmt(usage.totalTokens)}, turns: ${fmt(usage.turns)}`);
+        if (usage.filesRead && usage.filesRead.length > 0) {
+            core.info(`Agentic reads: ${usage.filesRead.join(', ')}`);
+        }
     }
     async getRepoInstructions(headRef) {
         const shared = await this.fetchInstructionsUrl();
