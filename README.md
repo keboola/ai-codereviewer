@@ -76,7 +76,7 @@ jobs:
           MAX_COMMENTS: 10 # 0 to disable
           MIN_COMMENT_SEVERITY: minor # blocker | major | minor | nit
           PROJECT_CONTEXT: "This is a Node.js TypeScript project"
-          CONTEXT_FILES: "package.json,README.md"
+          CONTEXT_FILES: "package.json,README.md" # files attached to every review for project context (empty by default)
           EXCLUDE_PATTERNS: "**/*.lock,**/*.json,**/*.md"
 
       - name: Remove ai-review label after re-trigger
@@ -125,7 +125,7 @@ Regardless of mode, applying the `ai-review` label to any PR always triggers a f
 | `INSTRUCTIONS_FILE` | Path (in the PR head) to a Markdown file with repo-specific reviewer instructions. Skipped silently if missing. Combined with `INSTRUCTIONS_URL` when both are set. | `.github/ai-review.md` |
 | `INSTRUCTIONS_URL` | URL to a Markdown file with shared reviewer instructions (typically a central org-wide config repo). One source of truth for many consumers. | `""` |
 | `INSTRUCTIONS_URL_TOKEN` | Optional bearer token for `INSTRUCTIONS_URL` when the source requires authentication (private GitHub raw URLs, etc.). | `""` |
-| `CONTEXT_FILES` | Files to include in review (comma-separated) | `"package.json,README.md"` |
+| `CONTEXT_FILES` | Comma-separated list of files (paths from repo root) fetched and shown to the model alongside the diff. Empty by default — set per consumer or via `.github/ai-review.yml` `context_files`. | `""` |
 | `EXCLUDE_PATTERNS` | Files to exclude (glob patterns, comma-separated) | `"**/*.lock,**/*.json,**/*.md"` |
 | `CONFIG_FILE` | Path (in the PR head) to a YAML file whose top-level keys override action inputs for this repo. See "Per-repo overrides" below. | `.github/ai-review.yml` |
 
@@ -171,6 +171,11 @@ exclude_patterns: "vendor/**,*.generated.ts"
 instructions_file: ".github/review-rules.md"
 project_context: "This repo is the public API gateway."
 project_context_file: "ARCHITECTURE.md"
+context_files:                       # files attached to every review (default: empty)
+  - package.json
+  - tsconfig.json
+# context_files: "package.json,tsconfig.json"   # comma-separated string also accepted
+# context_files: []                              # explicit opt-out (override a non-empty CONTEXT_FILES baseline)
 ```
 
 **Layering.** Action inputs (set in the central workflow) are the **baseline**. Anything set in this file **overrides** the baseline for this repo. Anything not in the file falls through to the action input value. Sensitive / org-level inputs (API keys, `AI_BASE_URL`, `INSTRUCTIONS_URL`, `INSTRUCTIONS_URL_TOKEN`) are intentionally **not** overridable from this file — they stay in workflow inputs / secrets.

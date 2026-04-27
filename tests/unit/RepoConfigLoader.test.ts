@@ -78,4 +78,41 @@ unknown_key: "ignored"
     );
     expect(cfg.max_comments).toBeUndefined();
   });
+
+  it('parses context_files as a YAML list', async () => {
+    const yaml = `
+context_files:
+  - package.json
+  - tsconfig.json
+`.trim();
+    const cfg = await loadRepoConfig(fakeGithub(yaml), '.github/ai-review.yml', 'h');
+    expect(cfg.context_files).toEqual(['package.json', 'tsconfig.json']);
+  });
+
+  it('parses context_files as a comma-separated string', async () => {
+    const cfg = await loadRepoConfig(
+      fakeGithub('context_files: "package.json, tsconfig.json"'),
+      '.github/ai-review.yml',
+      'h'
+    );
+    expect(cfg.context_files).toEqual(['package.json', 'tsconfig.json']);
+  });
+
+  it('parses context_files: [] as an explicit opt-out (empty array)', async () => {
+    const cfg = await loadRepoConfig(
+      fakeGithub('context_files: []'),
+      '.github/ai-review.yml',
+      'h'
+    );
+    expect(cfg.context_files).toEqual([]);
+  });
+
+  it('ignores context_files of unsupported type', async () => {
+    const cfg = await loadRepoConfig(
+      fakeGithub('context_files: 42'),
+      '.github/ai-review.yml',
+      'h'
+    );
+    expect(cfg.context_files).toBeUndefined();
+  });
 });

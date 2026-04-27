@@ -1,0 +1,11 @@
+# Per-repo overrides for the AI Code Reviewer running on this repo.
+# Schema documented in README.md → "Per-repo overrides via .github/ai-review.yml".
+
+# Files attached to every review so the model knows what kind of project this is
+# (a TypeScript node-action shipping bundled JS in dist/, with these dependencies).
+# The action default is empty; we opt this repo in explicitly.
+context_files:
+  - package.json
+  - tsconfig.json
+  - action.yml
+  - README.md
