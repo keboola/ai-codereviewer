@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { AIProvider, AIProviderConfig, ReviewRequest, ReviewResponse } from './AIProvider';
 import * as core from '@actions/core';
-import { baseCodeReviewPrompt, updateReviewPrompt } from '../prompts';
+import { buildSystemPrompt } from '../prompts';
 import { TextBlock } from '@anthropic-ai/sdk/resources';
 
 export class AnthropicProvider implements AIProvider {
@@ -21,7 +21,7 @@ export class AnthropicProvider implements AIProvider {
     const response = await this.client.messages.create({
       model: this.config.model,
       max_tokens: 4000,
-      system: this.buildSystemPrompt(request),
+      system: buildSystemPrompt(request),
       messages: [
         {
           role: 'user',
@@ -58,19 +58,6 @@ export class AnthropicProvider implements AIProvider {
         }))
       }))
     });
-  }
-
-  private buildSystemPrompt(request: ReviewRequest): string {
-    const isUpdate = request.context.isUpdate;
-    const repoInstructions = request.context.repoInstructions?.trim();
-    const repoBlock = repoInstructions
-      ? `\n\n------\nRepository-specific reviewer instructions (override the generic guidance above when they conflict):\n${repoInstructions}\n`
-      : '';
-    return `
-      ${baseCodeReviewPrompt}
-      ${isUpdate ? updateReviewPrompt : ''}
-      ${repoBlock}
-    `;
   }
 
   private parseResponse(response: Anthropic.Message): ReviewResponse {

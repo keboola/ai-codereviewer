@@ -2,7 +2,7 @@ import { GenerativeModel, GoogleGenerativeAI } from '@google/generative-ai';
 import { AIProvider, AIProviderConfig, ReviewRequest, ReviewResponse } from './AIProvider';
 import * as core from '@actions/core';
 import { jsonrepair } from 'jsonrepair'
-import { baseCodeReviewPrompt, updateReviewPrompt } from '../prompts';
+import { buildSystemPrompt } from '../prompts';
 
 export class GeminiProvider implements AIProvider {
   private config!: AIProviderConfig;
@@ -59,7 +59,7 @@ export class GeminiProvider implements AIProvider {
     core.debug(`Sending request to Gemini with prompt structure: ${JSON.stringify(request, null, 2)}`);
 
     const result = await this.model.generateContent({
-      systemInstruction: this.buildSystemPrompt(request),
+      systemInstruction: buildSystemPrompt(request),
       contents: [
         {
           role: 'user',
@@ -96,19 +96,6 @@ export class GeminiProvider implements AIProvider {
         }))
       }))
     });
-  }
-
-  private buildSystemPrompt(request: ReviewRequest): string {
-    const isUpdate = request.context.isUpdate;
-    const repoInstructions = request.context.repoInstructions?.trim();
-    const repoBlock = repoInstructions
-      ? `\n\n------\nRepository-specific reviewer instructions (override the generic guidance above when they conflict):\n${repoInstructions}\n`
-      : '';
-    return `
-      ${baseCodeReviewPrompt}
-      ${isUpdate ? updateReviewPrompt : ''}
-      ${repoBlock}
-    `;
   }
 
   private parseResponse(response: any): ReviewResponse {

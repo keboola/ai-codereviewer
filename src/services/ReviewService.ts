@@ -78,15 +78,15 @@ export class ReviewService {
     const modifiedFiles = await this.diffService.getRelevantFiles(prDetails, lastReviewedCommit);
     core.info(`Modified files length: ${modifiedFiles.length}`);
 
-    // Get full content for each modified file
+    // Get full content for each modified file (head version only — the diff
+    // already encodes what changed, so fetching the base version too would
+    // double the file-content tokens for redundant context).
     const filesWithContent = await Promise.all(
       modifiedFiles.map(async (file) => {
-        console.log('Context for file:', file.path);
-        const fullContent = await this.githubService.getFileContent(file.path, prDetails.head);
+        const content = await this.githubService.getFileContent(file.path, prDetails.head);
         return {
           path: file.path,
-          content: fullContent,
-          originalContent: await this.githubService.getFileContent(file.path, prDetails.base),
+          content,
           diff: file.diff,
         };
       })
