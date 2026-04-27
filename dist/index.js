@@ -1562,6 +1562,21 @@ async function loadRepoConfig(github, path, headRef) {
     if (typeof raw.project_context_file === 'string') {
         cfg.project_context_file = raw.project_context_file;
     }
+    if (Array.isArray(raw.context_files)) {
+        cfg.context_files = raw.context_files
+            .filter((v) => typeof v === 'string')
+            .map(s => s.trim())
+            .filter(Boolean);
+    }
+    else if (typeof raw.context_files === 'string') {
+        cfg.context_files = raw.context_files
+            .split(',')
+            .map(s => s.trim())
+            .filter(Boolean);
+    }
+    else if (raw.context_files !== undefined) {
+        core.warning(`${path}: ignoring context_files (must be a list of strings or a comma-separated string)`);
+    }
     const overrides = Object.keys(cfg);
     if (overrides.length > 0) {
         core.info(`Loaded per-repo config from ${path}; overriding: ${overrides.join(', ')}`);
@@ -1627,7 +1642,7 @@ function severityRank(s) {
 }
 class ReviewService {
     constructor(aiProvider, githubService, diffService, config) {
-        var _a;
+        var _a, _b;
         this.aiProvider = aiProvider;
         this.githubService = githubService;
         this.diffService = diffService;
@@ -1641,14 +1656,14 @@ class ReviewService {
             approveConfidenceThreshold: threshold,
             projectContext: config.projectContext,
             projectContextFile: config.projectContextFile,
-            contextFiles: config.contextFiles || ['package.json', 'README.md'],
+            contextFiles: (_a = config.contextFiles) !== null && _a !== void 0 ? _a : [],
             instructionsFile: config.instructionsFile,
             instructionsUrl: config.instructionsUrl,
             instructionsUrlToken: config.instructionsUrlToken,
             configFile: config.configFile,
             providerLabel: config.providerLabel,
             modelLabel: config.modelLabel,
-            minCommentSeverity: (_a = config.minCommentSeverity) !== null && _a !== void 0 ? _a : 'minor',
+            minCommentSeverity: (_b = config.minCommentSeverity) !== null && _b !== void 0 ? _b : 'minor',
         };
     }
     applyRepoConfig(repo) {
@@ -1666,6 +1681,8 @@ class ReviewService {
             this.config.projectContextFile = repo.project_context_file;
         if (repo.project_context !== undefined)
             this.config.projectContext = repo.project_context;
+        if (repo.context_files !== undefined)
+            this.config.contextFiles = repo.context_files;
     }
     async performReview(prNumber) {
         var _a, _b, _c;

@@ -55,9 +55,9 @@ inputs:
     description: "Optional bearer token for INSTRUCTIONS_URL when the source requires authentication (private GitHub raw URLs, etc.). Sent as 'Authorization: Bearer <token>'."
     required: false
   CONTEXT_FILES:
-    description: "Files to include in review (comma-separated)"
+    description: "Comma-separated list of files (paths from repo root) to fetch and include alongside the diff so the model has project shape (manifests, READMEs, schemas). Empty by default — set per consumer or via .github/ai-review.yml's context_files."
     required: false
-    default: "package.json,README.md"
+    default: ""
   EXCLUDE_PATTERNS:
     description: "Files to exclude (glob patterns)"
     required: false

@@ -50,7 +50,7 @@ export class ReviewService {
       approveConfidenceThreshold: threshold,
       projectContext: config.projectContext,
       projectContextFile: config.projectContextFile,
-      contextFiles: config.contextFiles || ['package.json', 'README.md'],
+      contextFiles: config.contextFiles ?? [],
       instructionsFile: config.instructionsFile,
       instructionsUrl: config.instructionsUrl,
       instructionsUrlToken: config.instructionsUrlToken,
@@ -69,6 +69,7 @@ export class ReviewService {
     if (repo.instructions_file !== undefined) this.config.instructionsFile = repo.instructions_file;
     if (repo.project_context_file !== undefined) this.config.projectContextFile = repo.project_context_file;
     if (repo.project_context !== undefined) this.config.projectContext = repo.project_context;
+    if (repo.context_files !== undefined) this.config.contextFiles = repo.context_files;
   }
 
   async performReview(prNumber: number): Promise<ReviewResponse> {

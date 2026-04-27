@@ -41,6 +41,40 @@ describe('ReviewService', () => {
     global.fetch = originalFetch;
   });
 
+  it('CONFIG_FILE context_files overrides the action-input list', async () => {
+    const { githubService, diffService, aiProvider } = makeServices({
+      summary: 'sum', suggestedAction: 'COMMENT', confidence: 50, lineComments: []
+    });
+
+    const yaml = `
+context_files:
+  - package.json
+  - tsconfig.json
+`.trim();
+
+    (githubService.getFileContent as jest.Mock).mockImplementation(
+      async (path: string) => {
+        if (path === '.github/ai-review.yml') return yaml;
+        if (path === 'package.json') return '{"name":"app"}';
+        if (path === 'tsconfig.json') return '{"compilerOptions":{}}';
+        return 'baseline-default-should-not-show';
+      }
+    );
+
+    const service = new ReviewService(aiProvider as any, githubService, diffService, {
+      maxComments: 0,
+      approveReviews: true,
+      minCommentSeverity: 'minor',
+      contextFiles: ['baseline-default'],
+      configFile: '.github/ai-review.yml',
+    });
+
+    await service.performReview(1);
+
+    const ctx = (aiProvider as StubAIProvider).lastRequest.contextFiles.map((f: any) => f.path);
+    expect(ctx.sort()).toEqual(['package.json', 'tsconfig.json']);
+  });
+
   it('per-repo CONFIG_FILE overrides action-input baselines', async () => {
     // Baseline: minor severity, threshold 80, max 0 (unlimited).
     // YAML overrides: major severity, threshold 95, max 1.
