@@ -73,6 +73,7 @@ jobs:
           # Optional configurations
           APPROVE_REVIEWS: true
           MAX_COMMENTS: 10 # 0 to disable
+          MIN_COMMENT_SEVERITY: minor # blocker | major | minor | nit
           PROJECT_CONTEXT: "This is a Node.js TypeScript project"
           CONTEXT_FILES: "package.json,README.md"
           EXCLUDE_PATTERNS: "**/*.lock,**/*.json,**/*.md"
@@ -115,6 +116,7 @@ Regardless of mode, applying the `ai-review` label to any PR always triggers a f
 | `AI_TEMPERATURE` | Temperature for AI model | `0` |
 | `APPROVE_REVIEWS` | Whether to approve PRs automatically | `true` |
 | `MAX_COMMENTS` | Maximum number of review comments | `0` |
+| `MIN_COMMENT_SEVERITY` | Drop comments below this severity. One of `blocker`, `major`, `minor`, `nit`. | `minor` |
 | `PROJECT_CONTEXT` | Project context for better reviews | `""` |
 | `CONTEXT_FILES` | Files to include in review (comma-separated) | `"package.json,README.md"` |
 | `EXCLUDE_PATTERNS` | Files to exclude (glob patterns, comma-separated) | `"**/*.lock,**/*.json,**/*.md"` |

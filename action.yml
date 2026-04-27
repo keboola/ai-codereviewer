@@ -27,6 +27,10 @@ inputs:
     description: "Maximum number of review comments"
     required: false
     default: "0"
+  MIN_COMMENT_SEVERITY:
+    description: "Minimum severity to keep (blocker, major, minor, nit)"
+    required: false
+    default: "minor"
   PROJECT_CONTEXT:
     description: "Additional context about the project"
     required: false
