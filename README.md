@@ -72,6 +72,7 @@ jobs:
 
           # Optional configurations
           APPROVE_REVIEWS: true
+          APPROVE_CONFIDENCE_THRESHOLD: 80 # 0-100; only auto-approve when confidence >= this
           MAX_COMMENTS: 10 # 0 to disable
           MIN_COMMENT_SEVERITY: minor # blocker | major | minor | nit
           PROJECT_CONTEXT: "This is a Node.js TypeScript project"
@@ -115,6 +116,7 @@ Regardless of mode, applying the `ai-review` label to any PR always triggers a f
 | `AI_MODEL` | Model to use (see supported models below) | Provider's default |
 | `AI_TEMPERATURE` | Temperature for AI model | `0` |
 | `APPROVE_REVIEWS` | Whether to approve PRs automatically | `true` |
+| `APPROVE_CONFIDENCE_THRESHOLD` | Minimum AI confidence (0-100) required to auto-approve. Below this, an `approve` verdict is downgraded to `comment`. Any surviving `blocker` comment forces `request_changes` regardless. | `80` |
 | `MAX_COMMENTS` | Maximum number of review comments | `0` |
 | `MIN_COMMENT_SEVERITY` | Drop comments below this severity. One of `blocker`, `major`, `minor`, `nit`. | `minor` |
 | `PROJECT_CONTEXT` | Project context for better reviews | `""` |
