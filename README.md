@@ -32,21 +32,38 @@ name: AI Code Review
 
 on:
   pull_request:
-    types: [labeled]
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+
 permissions: write-all
+
+concurrency:
+  group: code-review-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   review:
     runs-on: ubuntu-latest
-    if: github.event.label.name == 'ai-review'
+    # Run when:
+    #   - the "ai-review" label was just applied (manual re-trigger), OR
+    #   - mode is "auto" (default) and the PR is not a draft (or drafts are explicitly allowed).
+    if: >-
+      (github.event.action == 'labeled' && github.event.label.name == 'ai-review')
+      || (
+        github.event.action != 'labeled'
+        && (vars.AI_REVIEW_MODE == 'auto' || vars.AI_REVIEW_MODE == '')
+        && (
+          github.event.pull_request.draft == false
+          || vars.AI_REVIEW_INCLUDE_DRAFTS == 'true'
+        )
+      )
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: AI Code Review
         uses: keboola/ai-code-reviewer@main
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          
+
           # Choose your AI provider and key
           AI_PROVIDER: "openai" # or "anthropic" or "google"
           AI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -59,15 +76,34 @@ jobs:
           PROJECT_CONTEXT: "This is a Node.js TypeScript project"
           CONTEXT_FILES: "package.json,README.md"
           EXCLUDE_PATTERNS: "**/*.lock,**/*.json,**/*.md"
-      
-      - name: Remove Label
-        uses: mondeja/remove-labels-gh-action@v2
+
+      - name: Remove ai-review label after re-trigger
+        if: always() && github.event.action == 'labeled' && github.event.label.name == 'ai-review'
+        uses: actions/github-script@v7
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          labels: ai-review
+          script: |
+            try {
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                name: 'ai-review',
+              });
+            } catch (e) {
+              core.warning(`Could not remove label: ${e.message}`);
+            }
 ```
 
-With this configuration when you apply tag `ai-review` bot will do review to your PR and then remove tag itself.
+### Trigger modes
+
+Configure via Actions **repository variables** (`Settings → Secrets and variables → Actions → Variables`):
+
+| Variable | Values | Default | Effect |
+|---|---|---|---|
+| `AI_REVIEW_MODE` | `auto`, `label` | `auto` | `auto` runs on every non-draft PR. `label` only runs when the `ai-review` label is applied. |
+| `AI_REVIEW_INCLUDE_DRAFTS` | `true`, `false` | `false` | When `true` and `AI_REVIEW_MODE=auto`, drafts are also reviewed. |
+
+Regardless of mode, applying the `ai-review` label to any PR always triggers a fresh review. The label is removed automatically when the run finishes — apply it again to re-review.
 
 ## Configuration
 
