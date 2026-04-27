@@ -13,6 +13,7 @@ async function main() {
     const provider = core.getInput('AI_PROVIDER');
     const model = core.getInput('AI_MODEL');
     const apiKey = core.getInput('AI_API_KEY');
+    const baseURL = core.getInput('AI_BASE_URL');
     const githubToken = core.getInput('GITHUB_TOKEN');
     const temperature = parseFloat(core.getInput('AI_TEMPERATURE') || '0');
 
@@ -36,6 +37,7 @@ async function main() {
       apiKey,
       model,
       temperature,
+      baseURL: baseURL || undefined,
     });
 
     // Initialize services

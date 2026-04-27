@@ -3,6 +3,7 @@ export interface AIProviderConfig {
   model: string;
   maxTokens?: number;
   temperature?: number;
+  baseURL?: string;
 }
 
 export interface ReviewRequest {

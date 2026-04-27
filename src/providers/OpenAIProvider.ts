@@ -10,7 +10,12 @@ export class OpenAIProvider implements AIProvider {
 
   async initialize(config: AIProviderConfig): Promise<void> {
     this.config = config;
-    this.client = new OpenAI({ apiKey: config.apiKey });
+    const clientOptions: ConstructorParameters<typeof OpenAI>[0] = { apiKey: config.apiKey };
+    if (config.baseURL) {
+      clientOptions.baseURL = config.baseURL;
+      core.info(`OpenAI client routed to baseURL: ${config.baseURL}`);
+    }
+    this.client = new OpenAI(clientOptions);
   }
 
   async review(request: ReviewRequest): Promise<ReviewResponse> {
