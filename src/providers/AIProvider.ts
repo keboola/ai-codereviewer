@@ -40,12 +40,26 @@ export interface ReviewRequest {
   };
 }
 
+export type CommentSeverity = 'blocker' | 'major' | 'minor' | 'nit';
+
+export type CommentCategory =
+  | 'security'
+  | 'bug'
+  | 'performance'
+  | 'maintainability'
+  | 'style'
+  | 'docs'
+  | 'test'
+  | 'other';
+
 export interface ReviewResponse {
   summary: string;
   lineComments?: Array<{
     path: string;
     line: number;
     comment: string;
+    severity?: CommentSeverity;
+    category?: CommentCategory;
   }>;
   suggestedAction: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT';
   confidence: number;

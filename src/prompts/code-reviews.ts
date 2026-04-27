@@ -1,7 +1,15 @@
 export const outputFormat = `
 {
   "summary": "",
-  "comments": [{"path": "file_path", "line": number, "comment": "comment text"}],
+  "comments": [
+    {
+      "path": "file_path",
+      "line": number,
+      "comment": "comment text",
+      "severity": "blocker|major|minor|nit",
+      "category": "security|bug|performance|maintainability|style|docs|test|other"
+    }
+  ],
   "suggestedAction": "approve|request_changes|comment",
   "confidence": number
 }
@@ -141,6 +149,12 @@ For the "comments" field:
   * path: The path to the file that the comment is about
   * line: The line number in the file that the comment is about
   * comment: The comment text
+  * severity: One of "blocker", "major", "minor", "nit"
+      - "blocker": will block merge — security vulnerability, data loss / corruption, broken core functionality, race condition or memory leak in a critical path, missing input validation on a sensitive operation, unauthorized-access risk
+      - "major": should be addressed before merge — likely bug, significant performance regression, incorrect error handling, broken contract, clearly missing test coverage for risky logic
+      - "minor": worth addressing — code smell, duplicated logic, unclear naming, non-critical lint or typing issue, small perf improvement
+      - "nit": stylistic / cosmetic — do NOT post unless explicitly asked by repo instructions
+  * category: One of "security", "bug", "performance", "maintainability", "style", "docs", "test", "other"
 - Other rules for "comments" field:
   * ONLY use right-side line numbers that appear before "|" in the diff (the "<rightLine>" value).
   * DO NOT use line number 0, line numbers not present in the diff, or "-" lines (those are removed lines).
