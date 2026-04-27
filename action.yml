@@ -38,6 +38,10 @@ inputs:
   PROJECT_CONTEXT:
     description: "Additional context about the project"
     required: false
+  INSTRUCTIONS_FILE:
+    description: "Path to a file in the PR head containing repository-specific reviewer instructions (Markdown). Skipped silently if missing."
+    required: false
+    default: ".github/ai-review.md"
   CONTEXT_FILES:
     description: "Files to include in review (comma-separated)"
     required: false

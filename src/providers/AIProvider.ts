@@ -36,6 +36,7 @@ export interface ReviewRequest {
     repository: string;
     owner: string;
     projectContext?: string;
+    repoInstructions?: string;
     isUpdate?: boolean;
   };
 }
