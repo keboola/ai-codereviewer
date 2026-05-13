@@ -1,5 +1,6 @@
 import { ReviewRequest } from '../providers/AIProvider';
 import { baseCodeReviewPrompt, updateReviewPrompt } from './code-reviews';
+import { DEFAULT_AGENTIC_LIMITS } from '../services/AgenticToolRunner';
 
 /**
  * Stitch together the system prompt sent to every provider:
@@ -18,7 +19,7 @@ export function buildSystemPrompt(request: ReviewRequest): string {
   }
 
   if (request.context.agenticReview) {
-    sections.push(agenticAddendum);
+    sections.push(buildAgenticAddendum(request.context.agenticLimits));
   }
 
   const repoInstructions = request.context.repoInstructions?.trim();
@@ -31,10 +32,27 @@ export function buildSystemPrompt(request: ReviewRequest): string {
   return sections.join('\n');
 }
 
-const agenticAddendum = `------
+function buildAgenticAddendum(limits?: { maxFiles: number; maxBytesPerFile: number; maxTurns: number }): string {
+  const maxFiles = limits?.maxFiles ?? DEFAULT_AGENTIC_LIMITS.maxFiles;
+  const maxBytesPerFile = limits?.maxBytesPerFile ?? DEFAULT_AGENTIC_LIMITS.maxBytesPerFile;
+  const maxTurns = limits?.maxTurns ?? DEFAULT_AGENTIC_LIMITS.maxTurns;
+
+  return `------
 Agentic mode: you have two tools available.
 
-- \`read_file(path, reason)\`: read any file from the PR head. Use it to inspect helpers, types, configuration, test fixtures, etc. that are referenced by the diff but not included in it. Spend reads only on files that meaningfully change your review — there is a per-session budget.
-- \`submit_review(...)\`: terminator. Call this exactly once when you have all the context you need. The arguments are the review object. Do NOT emit free-form text in agentic mode — only tool calls are processed.
+- \`read_file(path, reason, [start_line], [end_line])\`: read any file (or a slice of one) from the PR head. Use it to inspect helpers, types, configuration, test fixtures, etc. that are referenced by the diff but not included in it. Spend reads only on files that meaningfully change your review — there is a strict per-session budget.
+- \`submit_review(...)\`: terminator. Call this exactly once with your final review. The arguments are the review object. Do NOT emit free-form text in agentic mode — only tool calls are processed.
 
-Do not request files just to add color; request files when the diff alone leaves a real ambiguity (e.g. "this calls foo() but foo isn't shown — is it async? does it throw?"). Reading the same file twice is wasteful and will be refused.`;
+Per-session budget (HARD limits — enforced by the runner, you cannot exceed them):
+- At most ${maxFiles} distinct (path, range) reads in total. Further read_file calls will be refused.
+- Each read returns at most ${maxBytesPerFile} bytes; larger payloads are truncated.
+- The whole session ends after ${maxTurns} model turns. If you have not called submit_review by then, the run is aborted and your review is LOST.
+
+CRITICAL — you MUST call \`submit_review\` before any of those limits is hit:
+1. Track your own usage. Each turn where you call read_file counts; each file (or range) counts toward the ${maxFiles}-read cap.
+2. When you are within one turn of the cap, or within one or two reads of the file cap, STOP reading and call \`submit_review\` immediately with whatever you have. A partial review delivered via submit_review is far more useful than a complete review that never ships.
+3. If a read_file call returns an error containing "budget exhausted" or "already read", do NOT retry with a different path hoping it will work — call \`submit_review\` on the very next turn.
+4. On the final allowed turn, ONLY call \`submit_review\`. Do not start another read_file you cannot finish.
+
+Do not request files just to add color; request files when the diff alone leaves a real ambiguity (e.g. "this calls foo() but foo isn't shown — is it async? does it throw?"). Reading the same (path, range) twice is wasteful and will be refused.`;
+}

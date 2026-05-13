@@ -69,7 +69,8 @@ export class AnthropicProvider implements AIProvider {
 
     let aggregateUsage: UsageReport | undefined;
 
-    for (let turn = 1; turn <= DEFAULT_AGENTIC_LIMITS.maxTurns; turn++) {
+    const maxTurns = request.context.agenticLimits?.maxTurns ?? DEFAULT_AGENTIC_LIMITS.maxTurns;
+    for (let turn = 1; turn <= maxTurns; turn++) {
       const response = await this.client.messages.create({
         model: this.config.model,
         max_tokens: 8000,
@@ -125,7 +126,7 @@ export class AnthropicProvider implements AIProvider {
       messages.push({ role: 'user', content: toolResults });
     }
 
-    core.warning(`Agentic loop hit max turns (${DEFAULT_AGENTIC_LIMITS.maxTurns}) without submit_review`);
+    core.warning(`Agentic loop hit max turns (${maxTurns}) without submit_review`);
     const fb = this.fallback('Agentic loop did not call submit_review within budget');
     fb.usage = aggregateUsage;
     return fb;

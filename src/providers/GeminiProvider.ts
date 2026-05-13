@@ -90,7 +90,8 @@ export class GeminiProvider implements AIProvider {
 
     let aggregateUsage: UsageReport | undefined;
 
-    for (let turn = 1; turn <= DEFAULT_AGENTIC_LIMITS.maxTurns; turn++) {
+    const maxTurns = request.context.agenticLimits?.maxTurns ?? DEFAULT_AGENTIC_LIMITS.maxTurns;
+    for (let turn = 1; turn <= maxTurns; turn++) {
       const result = await this.agenticModel.generateContent({
         systemInstruction: systemPrompt,
         contents,
@@ -133,7 +134,7 @@ export class GeminiProvider implements AIProvider {
       });
     }
 
-    core.warning(`Agentic loop hit max turns without submit_review`);
+    core.warning(`Agentic loop hit max turns (${maxTurns}) without submit_review`);
     const fb = this.fallback('Agentic loop did not call submit_review within budget');
     fb.usage = aggregateUsage;
     return fb;

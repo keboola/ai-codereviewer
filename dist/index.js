@@ -74,6 +74,7 @@ async function main() {
         const excludePatterns = core.getInput('EXCLUDE_PATTERNS');
         const configFile = core.getInput('CONFIG_FILE');
         const agenticReview = core.getBooleanInput('AGENTIC_REVIEW');
+        const agenticLimits = parseAgenticLimitsFromInputs();
         // Initialize services
         const aiProvider = getProvider(provider);
         await aiProvider.initialize({
@@ -97,6 +98,7 @@ async function main() {
             instructionsUrlToken,
             configFile,
             agenticReview,
+            agenticLimits,
             providerLabel: provider,
             modelLabel: model,
             minCommentSeverity: minCommentSeverity,
@@ -120,6 +122,30 @@ function validateInputs({ provider, minCommentSeverity }) {
     if (!VALID_SEVERITIES.includes(minCommentSeverity)) {
         throw new Error(`MIN_COMMENT_SEVERITY must be one of [${VALID_SEVERITIES.join(', ')}]; got '${minCommentSeverity}'`);
     }
+}
+function parseAgenticLimitsFromInputs() {
+    const out = {};
+    const maxFiles = parsePositiveInt(core.getInput('AGENTIC_MAX_FILES'), 'AGENTIC_MAX_FILES');
+    if (maxFiles !== undefined)
+        out.maxFiles = maxFiles;
+    const maxBytes = parsePositiveInt(core.getInput('AGENTIC_MAX_BYTES_PER_FILE'), 'AGENTIC_MAX_BYTES_PER_FILE');
+    if (maxBytes !== undefined)
+        out.maxBytesPerFile = maxBytes;
+    const maxTurns = parsePositiveInt(core.getInput('AGENTIC_MAX_TURNS'), 'AGENTIC_MAX_TURNS');
+    if (maxTurns !== undefined)
+        out.maxTurns = maxTurns;
+    return out;
+}
+function parsePositiveInt(raw, label) {
+    const trimmed = (raw !== null && raw !== void 0 ? raw : '').trim();
+    if (!trimmed)
+        return undefined;
+    const n = Number.parseInt(trimmed, 10);
+    if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
+        core.warning(`Ignoring ${label}='${raw}' (must be a positive integer); falling back to default`);
+        return undefined;
+    }
+    return n;
 }
 function getProvider(provider) {
     switch (provider.toLowerCase()) {
@@ -164,6 +190,7 @@ main().catch(error => {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.buildSystemPrompt = buildSystemPrompt;
 const code_reviews_1 = __nccwpck_require__(264);
+const AgenticToolRunner_1 = __nccwpck_require__(2215);
 /**
  * Stitch together the system prompt sent to every provider:
  *   1. Base reviewer instructions (always)
@@ -180,7 +207,7 @@ function buildSystemPrompt(request) {
         sections.push(code_reviews_1.updateReviewPrompt);
     }
     if (request.context.agenticReview) {
-        sections.push(agenticAddendum);
+        sections.push(buildAgenticAddendum(request.context.agenticLimits));
     }
     const repoInstructions = (_a = request.context.repoInstructions) === null || _a === void 0 ? void 0 : _a.trim();
     if (repoInstructions) {
@@ -188,13 +215,30 @@ function buildSystemPrompt(request) {
     }
     return sections.join('\n');
 }
-const agenticAddendum = `------
+function buildAgenticAddendum(limits) {
+    var _a, _b, _c;
+    const maxFiles = (_a = limits === null || limits === void 0 ? void 0 : limits.maxFiles) !== null && _a !== void 0 ? _a : AgenticToolRunner_1.DEFAULT_AGENTIC_LIMITS.maxFiles;
+    const maxBytesPerFile = (_b = limits === null || limits === void 0 ? void 0 : limits.maxBytesPerFile) !== null && _b !== void 0 ? _b : AgenticToolRunner_1.DEFAULT_AGENTIC_LIMITS.maxBytesPerFile;
+    const maxTurns = (_c = limits === null || limits === void 0 ? void 0 : limits.maxTurns) !== null && _c !== void 0 ? _c : AgenticToolRunner_1.DEFAULT_AGENTIC_LIMITS.maxTurns;
+    return `------
 Agentic mode: you have two tools available.
 
-- \`read_file(path, reason)\`: read any file from the PR head. Use it to inspect helpers, types, configuration, test fixtures, etc. that are referenced by the diff but not included in it. Spend reads only on files that meaningfully change your review — there is a per-session budget.
-- \`submit_review(...)\`: terminator. Call this exactly once when you have all the context you need. The arguments are the review object. Do NOT emit free-form text in agentic mode — only tool calls are processed.
+- \`read_file(path, reason, [start_line], [end_line])\`: read any file (or a slice of one) from the PR head. Use it to inspect helpers, types, configuration, test fixtures, etc. that are referenced by the diff but not included in it. Spend reads only on files that meaningfully change your review — there is a strict per-session budget.
+- \`submit_review(...)\`: terminator. Call this exactly once with your final review. The arguments are the review object. Do NOT emit free-form text in agentic mode — only tool calls are processed.
 
-Do not request files just to add color; request files when the diff alone leaves a real ambiguity (e.g. "this calls foo() but foo isn't shown — is it async? does it throw?"). Reading the same file twice is wasteful and will be refused.`;
+Per-session budget (HARD limits — enforced by the runner, you cannot exceed them):
+- At most ${maxFiles} distinct (path, range) reads in total. Further read_file calls will be refused.
+- Each read returns at most ${maxBytesPerFile} bytes; larger payloads are truncated.
+- The whole session ends after ${maxTurns} model turns. If you have not called submit_review by then, the run is aborted and your review is LOST.
+
+CRITICAL — you MUST call \`submit_review\` before any of those limits is hit:
+1. Track your own usage. Each turn where you call read_file counts; each file (or range) counts toward the ${maxFiles}-read cap.
+2. When you are within one turn of the cap, or within one or two reads of the file cap, STOP reading and call \`submit_review\` immediately with whatever you have. A partial review delivered via submit_review is far more useful than a complete review that never ships.
+3. If a read_file call returns an error containing "budget exhausted" or "already read", do NOT retry with a different path hoping it will work — call \`submit_review\` on the very next turn.
+4. On the final allowed turn, ONLY call \`submit_review\`. Do not start another read_file you cannot finish.
+
+Do not request files just to add color; request files when the diff alone leaves a real ambiguity (e.g. "this calls foo() but foo isn't shown — is it async? does it throw?"). Reading the same (path, range) twice is wasteful and will be refused.`;
+}
 
 
 /***/ }),
@@ -711,13 +755,14 @@ class AnthropicProvider {
         return parsed;
     }
     async reviewAgentic(request) {
-        var _a;
+        var _a, _b, _c;
         const systemPrompt = (0, prompts_1.buildSystemPrompt)(request);
         const messages = [
             { role: 'user', content: (0, prompts_1.buildUserPayload)(request) },
         ];
         let aggregateUsage;
-        for (let turn = 1; turn <= AgenticToolRunner_1.DEFAULT_AGENTIC_LIMITS.maxTurns; turn++) {
+        const maxTurns = (_b = (_a = request.context.agenticLimits) === null || _a === void 0 ? void 0 : _a.maxTurns) !== null && _b !== void 0 ? _b : AgenticToolRunner_1.DEFAULT_AGENTIC_LIMITS.maxTurns;
+        for (let turn = 1; turn <= maxTurns; turn++) {
             const response = await this.client.messages.create({
                 model: this.config.model,
                 max_tokens: 8000,
@@ -729,7 +774,7 @@ class AnthropicProvider {
                     { name: prompts_1.submitReviewTool.name, description: prompts_1.submitReviewTool.description, input_schema: prompts_1.submitReviewTool.parameters },
                 ],
                 messages,
-                temperature: (_a = this.config.temperature) !== null && _a !== void 0 ? _a : 0.3,
+                temperature: (_c = this.config.temperature) !== null && _c !== void 0 ? _c : 0.3,
             });
             aggregateUsage = this.mergeUsage(aggregateUsage, this.extractUsage(response), turn);
             if (response.stop_reason === 'max_tokens') {
@@ -761,7 +806,7 @@ class AnthropicProvider {
             }));
             messages.push({ role: 'user', content: toolResults });
         }
-        core.warning(`Agentic loop hit max turns (${AgenticToolRunner_1.DEFAULT_AGENTIC_LIMITS.maxTurns}) without submit_review`);
+        core.warning(`Agentic loop hit max turns (${maxTurns}) without submit_review`);
         const fb = this.fallback('Agentic loop did not call submit_review within budget');
         fb.usage = aggregateUsage;
         return fb;
@@ -934,20 +979,21 @@ class GeminiProvider {
         return parsed;
     }
     async reviewAgentic(request) {
-        var _a, _b, _c, _d;
+        var _a, _b, _c, _d, _e, _f;
         const systemPrompt = (0, prompts_1.buildSystemPrompt)(request);
         const contents = [
             { role: 'user', parts: [{ text: (0, prompts_1.buildUserPayload)(request) }] },
         ];
         let aggregateUsage;
-        for (let turn = 1; turn <= AgenticToolRunner_1.DEFAULT_AGENTIC_LIMITS.maxTurns; turn++) {
+        const maxTurns = (_b = (_a = request.context.agenticLimits) === null || _a === void 0 ? void 0 : _a.maxTurns) !== null && _b !== void 0 ? _b : AgenticToolRunner_1.DEFAULT_AGENTIC_LIMITS.maxTurns;
+        for (let turn = 1; turn <= maxTurns; turn++) {
             const result = await this.agenticModel.generateContent({
                 systemInstruction: systemPrompt,
                 contents,
             });
             const response = result.response;
             aggregateUsage = this.mergeUsage(aggregateUsage, this.extractUsage(response), turn);
-            const parts = (_d = (_c = (_b = (_a = response.candidates) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.content) === null || _c === void 0 ? void 0 : _c.parts) !== null && _d !== void 0 ? _d : [];
+            const parts = (_f = (_e = (_d = (_c = response.candidates) === null || _c === void 0 ? void 0 : _c[0]) === null || _d === void 0 ? void 0 : _d.content) === null || _e === void 0 ? void 0 : _e.parts) !== null && _f !== void 0 ? _f : [];
             const calls = parts.filter((p) => p.functionCall).map((p) => p.functionCall);
             const submit = calls.find((c) => c.name === 'submit_review');
             if (submit) {
@@ -973,7 +1019,7 @@ class GeminiProvider {
                 parts: responses.map(r => ({ functionResponse: r })),
             });
         }
-        core.warning(`Agentic loop hit max turns without submit_review`);
+        core.warning(`Agentic loop hit max turns (${maxTurns}) without submit_review`);
         const fb = this.fallback('Agentic loop did not call submit_review within budget');
         fb.usage = aggregateUsage;
         return fb;
@@ -1113,7 +1159,7 @@ class OpenAIProvider {
         return parsed;
     }
     async reviewAgentic(request) {
-        var _a, _b, _c, _d;
+        var _a, _b, _c, _d, _e, _f;
         const messages = [
             { role: this.getSystemPromptRole(), content: (0, prompts_1.buildSystemPrompt)(request) },
             { role: 'user', content: (0, prompts_1.buildUserPayload)(request) },
@@ -1123,7 +1169,8 @@ class OpenAIProvider {
             { type: 'function', function: { name: prompts_1.submitReviewTool.name, description: prompts_1.submitReviewTool.description, parameters: prompts_1.submitReviewTool.parameters } },
         ];
         let aggregateUsage;
-        for (let turn = 1; turn <= AgenticToolRunner_1.DEFAULT_AGENTIC_LIMITS.maxTurns; turn++) {
+        const maxTurns = (_b = (_a = request.context.agenticLimits) === null || _a === void 0 ? void 0 : _a.maxTurns) !== null && _b !== void 0 ? _b : AgenticToolRunner_1.DEFAULT_AGENTIC_LIMITS.maxTurns;
+        for (let turn = 1; turn <= maxTurns; turn++) {
             const response = await this.client.chat.completions.create({
                 model: this.config.model,
                 messages,
@@ -1132,10 +1179,10 @@ class OpenAIProvider {
                 temperature: this.getTemperature(),
             });
             aggregateUsage = this.mergeUsage(aggregateUsage, this.extractUsage(response), turn);
-            const message = (_a = response.choices[0]) === null || _a === void 0 ? void 0 : _a.message;
+            const message = (_c = response.choices[0]) === null || _c === void 0 ? void 0 : _c.message;
             if (!message)
                 break;
-            const toolCalls = (_b = message.tool_calls) !== null && _b !== void 0 ? _b : [];
+            const toolCalls = (_d = message.tool_calls) !== null && _d !== void 0 ? _d : [];
             const submit = toolCalls.find(tc => tc.type === 'function' && tc.function.name === 'submit_review');
             if (submit && submit.type === 'function') {
                 const review = this.parseSubmitArguments(submit.function.arguments);
@@ -1157,11 +1204,11 @@ class OpenAIProvider {
                     args = JSON.parse(read.function.arguments);
                 }
                 catch { /* keep empty */ }
-                const content = await request.tools.readFile((_c = args.path) !== null && _c !== void 0 ? _c : '', (_d = args.reason) !== null && _d !== void 0 ? _d : '', { startLine: args.start_line, endLine: args.end_line });
+                const content = await request.tools.readFile((_e = args.path) !== null && _e !== void 0 ? _e : '', (_f = args.reason) !== null && _f !== void 0 ? _f : '', { startLine: args.start_line, endLine: args.end_line });
                 messages.push({ role: 'tool', tool_call_id: read.id, content });
             }
         }
-        core.warning(`Agentic loop hit max turns without submit_review`);
+        core.warning(`Agentic loop hit max turns (${maxTurns}) without submit_review`);
         const fb = this.fallback('Agentic loop did not call submit_review within budget');
         fb.usage = aggregateUsage;
         return fb;
@@ -2028,6 +2075,24 @@ async function loadRepoConfig(github, path, headRef) {
     if (typeof raw.agentic_review === 'boolean') {
         cfg.agentic_review = raw.agentic_review;
     }
+    if (typeof raw.agentic_max_files === 'number' && Number.isInteger(raw.agentic_max_files) && raw.agentic_max_files > 0) {
+        cfg.agentic_max_files = raw.agentic_max_files;
+    }
+    else if (raw.agentic_max_files !== undefined) {
+        core.warning(`${path}: ignoring agentic_max_files='${raw.agentic_max_files}' (must be a positive integer)`);
+    }
+    if (typeof raw.agentic_max_bytes_per_file === 'number' && Number.isInteger(raw.agentic_max_bytes_per_file) && raw.agentic_max_bytes_per_file > 0) {
+        cfg.agentic_max_bytes_per_file = raw.agentic_max_bytes_per_file;
+    }
+    else if (raw.agentic_max_bytes_per_file !== undefined) {
+        core.warning(`${path}: ignoring agentic_max_bytes_per_file='${raw.agentic_max_bytes_per_file}' (must be a positive integer)`);
+    }
+    if (typeof raw.agentic_max_turns === 'number' && Number.isInteger(raw.agentic_max_turns) && raw.agentic_max_turns > 0) {
+        cfg.agentic_max_turns = raw.agentic_max_turns;
+    }
+    else if (raw.agentic_max_turns !== undefined) {
+        core.warning(`${path}: ignoring agentic_max_turns='${raw.agentic_max_turns}' (must be a positive integer)`);
+    }
     const overrides = Object.keys(cfg);
     if (overrides.length > 0) {
         core.info(`Loaded per-repo config from ${path}; overriding: ${overrides.join(', ')}`);
@@ -2094,7 +2159,7 @@ function severityRank(s) {
 }
 class ReviewService {
     constructor(aiProvider, githubService, diffService, config) {
-        var _a, _b, _c;
+        var _a, _b, _c, _d;
         this.aiProvider = aiProvider;
         this.githubService = githubService;
         this.diffService = diffService;
@@ -2114,12 +2179,14 @@ class ReviewService {
             instructionsUrlToken: config.instructionsUrlToken,
             configFile: config.configFile,
             agenticReview: (_b = config.agenticReview) !== null && _b !== void 0 ? _b : false,
+            agenticLimits: { ...AgenticToolRunner_1.DEFAULT_AGENTIC_LIMITS, ...((_c = config.agenticLimits) !== null && _c !== void 0 ? _c : {}) },
             providerLabel: config.providerLabel,
             modelLabel: config.modelLabel,
-            minCommentSeverity: (_c = config.minCommentSeverity) !== null && _c !== void 0 ? _c : 'minor',
+            minCommentSeverity: (_d = config.minCommentSeverity) !== null && _d !== void 0 ? _d : 'minor',
         };
     }
     applyRepoConfig(repo) {
+        var _a;
         if (repo.min_comment_severity !== undefined)
             this.config.minCommentSeverity = repo.min_comment_severity;
         if (repo.approve_reviews !== undefined)
@@ -2138,6 +2205,14 @@ class ReviewService {
             this.config.contextFiles = repo.context_files;
         if (repo.agentic_review !== undefined)
             this.config.agenticReview = repo.agentic_review;
+        if (repo.agentic_max_files !== undefined || repo.agentic_max_bytes_per_file !== undefined || repo.agentic_max_turns !== undefined) {
+            this.config.agenticLimits = {
+                ...((_a = this.config.agenticLimits) !== null && _a !== void 0 ? _a : AgenticToolRunner_1.DEFAULT_AGENTIC_LIMITS),
+                ...(repo.agentic_max_files !== undefined ? { maxFiles: repo.agentic_max_files } : {}),
+                ...(repo.agentic_max_bytes_per_file !== undefined ? { maxBytesPerFile: repo.agentic_max_bytes_per_file } : {}),
+                ...(repo.agentic_max_turns !== undefined ? { maxTurns: repo.agentic_max_turns } : {}),
+            };
+        }
     }
     async performReview(prNumber) {
         var _a, _b, _c, _d;
@@ -2186,6 +2261,7 @@ class ReviewService {
                 github: this.githubService,
                 ref: prDetails.head,
                 excludePatterns: this.diffService.getExcludePatterns(),
+                limits: this.config.agenticLimits,
             })
             : undefined;
         if (agenticReview) {
@@ -2210,6 +2286,7 @@ class ReviewService {
                     repoInstructions,
                     isUpdate,
                     agenticReview,
+                    agenticLimits: agenticEnv === null || agenticEnv === void 0 ? void 0 : agenticEnv.limits,
                 },
                 tools: agenticEnv
                     ? {

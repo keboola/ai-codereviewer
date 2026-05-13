@@ -115,4 +115,28 @@ context_files:
     );
     expect(cfg.context_files).toBeUndefined();
   });
+
+  it('parses positive integer agentic limit overrides', async () => {
+    const yaml = `
+agentic_max_files: 30
+agentic_max_bytes_per_file: 300000
+agentic_max_turns: 12
+`.trim();
+    const cfg = await loadRepoConfig(fakeGithub(yaml), '.github/ai-review.yml', 'h');
+    expect(cfg.agentic_max_files).toBe(30);
+    expect(cfg.agentic_max_bytes_per_file).toBe(300000);
+    expect(cfg.agentic_max_turns).toBe(12);
+  });
+
+  it('rejects non-positive or non-integer agentic limits', async () => {
+    const yaml = `
+agentic_max_files: 0
+agentic_max_bytes_per_file: -1
+agentic_max_turns: 2.5
+`.trim();
+    const cfg = await loadRepoConfig(fakeGithub(yaml), '.github/ai-review.yml', 'h');
+    expect(cfg.agentic_max_files).toBeUndefined();
+    expect(cfg.agentic_max_bytes_per_file).toBeUndefined();
+    expect(cfg.agentic_max_turns).toBeUndefined();
+  });
 });

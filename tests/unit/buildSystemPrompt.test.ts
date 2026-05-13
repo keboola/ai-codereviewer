@@ -41,4 +41,31 @@ describe('buildSystemPrompt', () => {
     const prompt = buildSystemPrompt(makeRequest({ repoInstructions: '   \n\n  ' }));
     expect(prompt).not.toContain('Repository-specific reviewer instructions');
   });
+
+  it('embeds the default agentic limits and a submit_review-before-cap directive', () => {
+    const prompt = buildSystemPrompt(makeRequest({ agenticReview: true }));
+    expect(prompt).toContain('Agentic mode');
+    // Defaults from DEFAULT_AGENTIC_LIMITS
+    expect(prompt).toContain('At most 20 distinct');
+    expect(prompt).toContain('at most 200000 bytes');
+    expect(prompt).toContain('after 8 model turns');
+    expect(prompt).toMatch(/MUST call .*submit_review/);
+    expect(prompt).toMatch(/before any of those limits is hit/);
+  });
+
+  it('interpolates custom agenticLimits from the request', () => {
+    const prompt = buildSystemPrompt(makeRequest({
+      agenticReview: true,
+      agenticLimits: { maxFiles: 5, maxBytesPerFile: 1234, maxTurns: 3 },
+    }));
+    expect(prompt).toContain('At most 5 distinct');
+    expect(prompt).toContain('at most 1234 bytes');
+    expect(prompt).toContain('after 3 model turns');
+  });
+
+  it('omits the agentic addendum entirely when agenticReview is false', () => {
+    const prompt = buildSystemPrompt(makeRequest({ agenticReview: false }));
+    expect(prompt).not.toContain('Agentic mode');
+    expect(prompt).not.toContain('submit_review');
+  });
 });
