@@ -22,6 +22,9 @@ export interface RepoConfig {
   /** Normalized to string[]; YAML may use either a list or a comma-separated string. Empty array opts out of context files entirely. */
   context_files?: string[];
   agentic_review?: boolean;
+  agentic_max_files?: number;
+  agentic_max_bytes_per_file?: number;
+  agentic_max_turns?: number;
 }
 
 const VALID_SEVERITIES = new Set<CommentSeverity>(['blocker', 'major', 'minor', 'nit']);
@@ -96,6 +99,21 @@ export async function loadRepoConfig(
   }
   if (typeof raw.agentic_review === 'boolean') {
     cfg.agentic_review = raw.agentic_review;
+  }
+  if (typeof raw.agentic_max_files === 'number' && Number.isInteger(raw.agentic_max_files) && raw.agentic_max_files > 0) {
+    cfg.agentic_max_files = raw.agentic_max_files;
+  } else if (raw.agentic_max_files !== undefined) {
+    core.warning(`${path}: ignoring agentic_max_files='${raw.agentic_max_files}' (must be a positive integer)`);
+  }
+  if (typeof raw.agentic_max_bytes_per_file === 'number' && Number.isInteger(raw.agentic_max_bytes_per_file) && raw.agentic_max_bytes_per_file > 0) {
+    cfg.agentic_max_bytes_per_file = raw.agentic_max_bytes_per_file;
+  } else if (raw.agentic_max_bytes_per_file !== undefined) {
+    core.warning(`${path}: ignoring agentic_max_bytes_per_file='${raw.agentic_max_bytes_per_file}' (must be a positive integer)`);
+  }
+  if (typeof raw.agentic_max_turns === 'number' && Number.isInteger(raw.agentic_max_turns) && raw.agentic_max_turns > 0) {
+    cfg.agentic_max_turns = raw.agentic_max_turns;
+  } else if (raw.agentic_max_turns !== undefined) {
+    core.warning(`${path}: ignoring agentic_max_turns='${raw.agentic_max_turns}' (must be a positive integer)`);
   }
 
   const overrides = Object.keys(cfg);

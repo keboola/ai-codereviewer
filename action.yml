@@ -70,6 +70,18 @@ inputs:
     description: "When true, the model can call read_file(path) during the review to fetch any file from the PR head — useful in large repos where the diff alone isn't enough. Adds latency and cost (multiple model turns). Default false."
     required: false
     default: "false"
+  AGENTIC_MAX_FILES:
+    description: "Per-session cap on distinct (path, range) reads the model may make during an agentic review. Ignored when AGENTIC_REVIEW is false."
+    required: false
+    default: "20"
+  AGENTIC_MAX_BYTES_PER_FILE:
+    description: "Per-read byte cap for read_file during an agentic review. Larger payloads are truncated. Ignored when AGENTIC_REVIEW is false."
+    required: false
+    default: "200000"
+  AGENTIC_MAX_TURNS:
+    description: "Maximum number of model turns in the agentic loop before the session is forced to end. Ignored when AGENTIC_REVIEW is false."
+    required: false
+    default: "8"
 runs:
   using: "node24"
   main: "dist/index.js"

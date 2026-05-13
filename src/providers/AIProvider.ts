@@ -39,6 +39,12 @@ export interface ReviewRequest {
     repoInstructions?: string;
     isUpdate?: boolean;
     agenticReview?: boolean;
+    /** Caps on the agentic loop. Only meaningful when agenticReview is true. */
+    agenticLimits?: {
+      maxFiles: number;
+      maxBytesPerFile: number;
+      maxTurns: number;
+    };
   };
   /**
    * When set, providers should drive a tool-use loop calling these

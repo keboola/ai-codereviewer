@@ -28,7 +28,9 @@ function makeServices(aiResponse: ReviewResponse) {
   const diffService = {
     getRelevantFiles: jest.fn().mockResolvedValue([
       { path: 'src/a.ts', diff: '@@', validRightLines: new Set([1, 2, 3]) }
-    ])
+    ]),
+    getExcludePatterns: jest.fn().mockReturnValue([]),
+    setExcludePatterns: jest.fn(),
   } as unknown as DiffService;
 
   const aiProvider = new StubAIProvider(aiResponse);
@@ -463,6 +465,58 @@ max_comments: 5
 
     const submit = githubService.submitReview as jest.Mock;
     expect(submit.mock.calls[0][1].suggestedAction).toBe('APPROVE');
+  });
+
+  it('propagates configured agentic limits into the AI request when agentic review is on', async () => {
+    const { githubService, diffService, aiProvider } = makeServices({
+      summary: 'sum', suggestedAction: 'COMMENT', confidence: 50, lineComments: []
+    });
+
+    (githubService.getFileContent as jest.Mock).mockResolvedValue('content');
+
+    const service = new ReviewService(aiProvider as any, githubService, diffService, {
+      maxComments: 0,
+      approveReviews: true,
+      minCommentSeverity: 'minor',
+      agenticReview: true,
+      agenticLimits: { maxFiles: 5, maxBytesPerFile: 1000, maxTurns: 3 },
+    });
+
+    await service.performReview(1);
+
+    const ctx = (aiProvider as StubAIProvider).lastRequest.context;
+    expect(ctx.agenticReview).toBe(true);
+    expect(ctx.agenticLimits).toEqual({ maxFiles: 5, maxBytesPerFile: 1000, maxTurns: 3 });
+  });
+
+  it('CONFIG_FILE agentic_max_* keys override action-input agentic limits', async () => {
+    const { githubService, diffService, aiProvider } = makeServices({
+      summary: 'sum', suggestedAction: 'COMMENT', confidence: 50, lineComments: []
+    });
+
+    const yaml = `
+agentic_review: true
+agentic_max_files: 7
+agentic_max_bytes_per_file: 4096
+agentic_max_turns: 4
+`.trim();
+
+    (githubService.getFileContent as jest.Mock).mockImplementation(
+      async (path: string) => path === '.github/ai-review.yml' ? yaml : 'content'
+    );
+
+    const service = new ReviewService(aiProvider as any, githubService, diffService, {
+      maxComments: 0,
+      approveReviews: true,
+      minCommentSeverity: 'minor',
+      configFile: '.github/ai-review.yml',
+      agenticLimits: { maxFiles: 99, maxBytesPerFile: 999999, maxTurns: 99 },
+    });
+
+    await service.performReview(1);
+
+    const ctx = (aiProvider as StubAIProvider).lastRequest.context;
+    expect(ctx.agenticLimits).toEqual({ maxFiles: 7, maxBytesPerFile: 4096, maxTurns: 4 });
   });
 
   it('keeps higher-severity comments when MAX_COMMENTS truncates', async () => {

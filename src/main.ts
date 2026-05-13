@@ -34,6 +34,7 @@ async function main() {
     const excludePatterns = core.getInput('EXCLUDE_PATTERNS');
     const configFile = core.getInput('CONFIG_FILE');
     const agenticReview = core.getBooleanInput('AGENTIC_REVIEW');
+    const agenticLimits = parseAgenticLimitsFromInputs();
 
     // Initialize services
     const aiProvider = getProvider(provider);
@@ -63,6 +64,7 @@ async function main() {
         instructionsUrlToken,
         configFile,
         agenticReview,
+        agenticLimits,
         providerLabel: provider,
         modelLabel: model,
         minCommentSeverity: minCommentSeverity as 'blocker' | 'major' | 'minor' | 'nit',
@@ -92,6 +94,28 @@ function validateInputs({ provider, minCommentSeverity }: { provider: string; mi
   if (!VALID_SEVERITIES.includes(minCommentSeverity as typeof VALID_SEVERITIES[number])) {
     throw new Error(`MIN_COMMENT_SEVERITY must be one of [${VALID_SEVERITIES.join(', ')}]; got '${minCommentSeverity}'`);
   }
+}
+
+function parseAgenticLimitsFromInputs(): { maxFiles?: number; maxBytesPerFile?: number; maxTurns?: number } {
+  const out: { maxFiles?: number; maxBytesPerFile?: number; maxTurns?: number } = {};
+  const maxFiles = parsePositiveInt(core.getInput('AGENTIC_MAX_FILES'), 'AGENTIC_MAX_FILES');
+  if (maxFiles !== undefined) out.maxFiles = maxFiles;
+  const maxBytes = parsePositiveInt(core.getInput('AGENTIC_MAX_BYTES_PER_FILE'), 'AGENTIC_MAX_BYTES_PER_FILE');
+  if (maxBytes !== undefined) out.maxBytesPerFile = maxBytes;
+  const maxTurns = parsePositiveInt(core.getInput('AGENTIC_MAX_TURNS'), 'AGENTIC_MAX_TURNS');
+  if (maxTurns !== undefined) out.maxTurns = maxTurns;
+  return out;
+}
+
+function parsePositiveInt(raw: string, label: string): number | undefined {
+  const trimmed = (raw ?? '').trim();
+  if (!trimmed) return undefined;
+  const n = Number.parseInt(trimmed, 10);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
+    core.warning(`Ignoring ${label}='${raw}' (must be a positive integer); falling back to default`);
+    return undefined;
+  }
+  return n;
 }
 
 function getProvider(provider: string) {

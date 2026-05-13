@@ -155,5 +155,32 @@ describe('AnthropicProvider', () => {
       expect(result.suggestedAction).toBe('COMMENT');
       expect(result.summary).toMatch(/did not call submit_review/);
     });
+
+    it('honors a per-request agenticLimits.maxTurns override', async () => {
+      // Always asks for another file → loop only exits when the cap is reached.
+      messagesCreate.mockResolvedValue({
+        stop_reason: 'tool_use',
+        usage: { input_tokens: 10, output_tokens: 5 },
+        content: [
+          { type: 'tool_use', id: 'x', name: 'read_file', input: { path: 'a.ts', reason: 'r' } },
+        ],
+      });
+      const readFile = jest.fn(async () => 'ok');
+
+      const provider = new AnthropicProvider();
+      await provider.initialize({ apiKey: 'k', model: 'claude-sonnet-4-6', temperature: 0.3 });
+      await provider.review({
+        ...makeRequest(),
+        context: {
+          repository: 'o/r',
+          owner: 'o',
+          agenticReview: true,
+          agenticLimits: { maxFiles: 99, maxBytesPerFile: 99999, maxTurns: 3 },
+        },
+        tools: { readFile },
+      });
+
+      expect(messagesCreate).toHaveBeenCalledTimes(3);
+    });
   });
 });

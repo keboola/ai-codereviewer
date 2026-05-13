@@ -3,7 +3,7 @@ import { GitHubService } from '../services/GitHubService';
 import { DiffService } from '../services/DiffService';
 import { CommentSeverity, ReviewResponse, UsageReport } from '../providers/AIProvider';
 import { loadRepoConfig, RepoConfig } from './RepoConfigLoader';
-import { executeReadFile, makeAgenticEnv } from './AgenticToolRunner';
+import { AgenticLimits, DEFAULT_AGENTIC_LIMITS, executeReadFile, makeAgenticEnv } from './AgenticToolRunner';
 import { withRetry } from '../utils/retry';
 import * as core from '@actions/core';
 
@@ -27,6 +27,7 @@ export interface ReviewServiceConfig {
   instructionsUrlToken?: string;
   configFile?: string;
   agenticReview?: boolean;
+  agenticLimits?: Partial<AgenticLimits>;
   providerLabel?: string;
   modelLabel?: string;
   minCommentSeverity?: CommentSeverity;
@@ -58,6 +59,7 @@ export class ReviewService {
       instructionsUrlToken: config.instructionsUrlToken,
       configFile: config.configFile,
       agenticReview: config.agenticReview ?? false,
+      agenticLimits: { ...DEFAULT_AGENTIC_LIMITS, ...(config.agenticLimits ?? {}) },
       providerLabel: config.providerLabel,
       modelLabel: config.modelLabel,
       minCommentSeverity: config.minCommentSeverity ?? 'minor',
@@ -74,6 +76,14 @@ export class ReviewService {
     if (repo.project_context !== undefined) this.config.projectContext = repo.project_context;
     if (repo.context_files !== undefined) this.config.contextFiles = repo.context_files;
     if (repo.agentic_review !== undefined) this.config.agenticReview = repo.agentic_review;
+    if (repo.agentic_max_files !== undefined || repo.agentic_max_bytes_per_file !== undefined || repo.agentic_max_turns !== undefined) {
+      this.config.agenticLimits = {
+        ...(this.config.agenticLimits ?? DEFAULT_AGENTIC_LIMITS),
+        ...(repo.agentic_max_files !== undefined ? { maxFiles: repo.agentic_max_files } : {}),
+        ...(repo.agentic_max_bytes_per_file !== undefined ? { maxBytesPerFile: repo.agentic_max_bytes_per_file } : {}),
+        ...(repo.agentic_max_turns !== undefined ? { maxTurns: repo.agentic_max_turns } : {}),
+      };
+    }
   }
 
   async performReview(prNumber: number): Promise<ReviewResponse> {
@@ -133,6 +143,7 @@ export class ReviewService {
           github: this.githubService,
           ref: prDetails.head,
           excludePatterns: this.diffService.getExcludePatterns(),
+          limits: this.config.agenticLimits,
         })
       : undefined;
 
@@ -158,6 +169,7 @@ export class ReviewService {
           repoInstructions,
           isUpdate,
           agenticReview,
+          agenticLimits: agenticEnv?.limits,
         },
         tools: agenticEnv
           ? {
