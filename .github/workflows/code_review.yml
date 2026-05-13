@@ -61,7 +61,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           AI_PROVIDER: "google"
           AI_API_KEY: ${{ secrets.GOOGLE_AI_KEY }}
-          AI_MODEL: "gemini-2.5-pro"
+          AI_MODEL: "gemini-3.1-pro-preview"
           AI_TEMPERATURE: 0.3
           MAX_COMMENTS: 5
           APPROVE_REVIEWS: true

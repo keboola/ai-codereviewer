@@ -9,9 +9,9 @@ export interface AgenticLimits {
 }
 
 export const DEFAULT_AGENTIC_LIMITS: AgenticLimits = {
-  maxFiles: 20,
-  maxBytesPerFile: 200_000,
-  maxTurns: 8,
+  maxFiles: 80,
+  maxBytesPerFile: 1_000_000,
+  maxTurns: 30,
 };
 
 export interface AgenticEnv {
