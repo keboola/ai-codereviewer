@@ -129,9 +129,9 @@ Regardless of mode, applying the `ai-review` label to any PR always triggers a f
 | `EXCLUDE_PATTERNS` | Files to exclude (glob patterns, comma-separated) | `"**/*.lock,**/*.json,**/*.md"` |
 | `CONFIG_FILE` | Path (in the PR head) to a YAML file whose top-level keys override action inputs for this repo. See "Per-repo overrides" below. | `.github/ai-review.yml` |
 | `AGENTIC_REVIEW` | When `true`, the model can call `read_file(path)` during review to fetch any file from the PR head — useful for large repos where the diff alone isn't enough context. Costs more (multi-turn). See "Agentic review" below. | `false` |
-| `AGENTIC_MAX_FILES` | Per-session cap on distinct `(path, range)` reads the model may make. Ignored when `AGENTIC_REVIEW` is `false`. | `20` |
-| `AGENTIC_MAX_BYTES_PER_FILE` | Per-read byte cap for `read_file`. Larger payloads are truncated. Ignored when `AGENTIC_REVIEW` is `false`. | `200000` |
-| `AGENTIC_MAX_TURNS` | Maximum number of model turns in the agentic loop before the session is forced to end. Ignored when `AGENTIC_REVIEW` is `false`. | `8` |
+| `AGENTIC_MAX_FILES` | Per-session cap on distinct `(path, range)` reads the model may make. Ignored when `AGENTIC_REVIEW` is `false`. | `80` |
+| `AGENTIC_MAX_BYTES_PER_FILE` | Per-read byte cap for `read_file`. Larger payloads are truncated. Ignored when `AGENTIC_REVIEW` is `false`. | `1000000` |
+| `AGENTIC_MAX_TURNS` | Maximum number of model turns in the agentic loop before the session is forced to end. Ignored when `AGENTIC_REVIEW` is `false`. | `30` |
 
 ### Per-repository reviewer instructions
 
@@ -181,9 +181,9 @@ context_files:                       # files attached to every review (default: 
 # context_files: "package.json,tsconfig.json"   # comma-separated string also accepted
 # context_files: []                              # explicit opt-out (override a non-empty CONTEXT_FILES baseline)
 agentic_review: true                 # let the model fetch any file via read_file (default: false)
-agentic_max_files: 30                # per-session read cap (default: 20)
-agentic_max_bytes_per_file: 300000   # per-read byte cap, larger payloads truncated (default: 200000)
-agentic_max_turns: 12                # cap on model turns in the agentic loop (default: 8)
+agentic_max_files: 120               # per-session read cap (default: 80)
+agentic_max_bytes_per_file: 2000000  # per-read byte cap, larger payloads truncated (default: 1000000)
+agentic_max_turns: 50                # cap on model turns in the agentic loop (default: 30)
 ```
 
 **Layering.** Action inputs (set in the central workflow) are the **baseline**. Anything set in this file **overrides** the baseline for this repo. Anything not in the file falls through to the action input value. Sensitive / org-level inputs (API keys, `AI_BASE_URL`, `INSTRUCTIONS_URL`, `INSTRUCTIONS_URL_TOKEN`) are intentionally **not** overridable from this file — they stay in workflow inputs / secrets.
@@ -198,7 +198,7 @@ By default, the model only sees the PR diff plus whatever you pin via `CONTEXT_F
 
 Set `AGENTIC_REVIEW: true` (or `agentic_review: true` in `.github/ai-review.yml`) and the model gets two tools:
 
-- **`read_file(path, reason, [start_line], [end_line])`** — fetches a file (or a slice of one) from the PR head. Output is line-numbered (`<n>: <text>`) so the model can cite exact line numbers in its review comments. Optional 1-based inclusive `start_line` / `end_line` lets the model peek at a specific function or block instead of pulling the whole file — saves tokens and stretches the per-session budget. Path-safety enforced (no `..`, no leading `/`, `EXCLUDE_PATTERNS` honored). Per-session caps default to 20 distinct (path, range) reads, 200 KB returned per read (truncated above), 8 model turns — tune via `AGENTIC_MAX_FILES` / `AGENTIC_MAX_BYTES_PER_FILE` / `AGENTIC_MAX_TURNS` (or the matching `agentic_max_*` keys in `.github/ai-review.yml`). Dedup is by `(path, range)` — different ranges of the same file are independent reads.
+- **`read_file(path, reason, [start_line], [end_line])`** — fetches a file (or a slice of one) from the PR head. Output is line-numbered (`<n>: <text>`) so the model can cite exact line numbers in its review comments. Optional 1-based inclusive `start_line` / `end_line` lets the model peek at a specific function or block instead of pulling the whole file — saves tokens and stretches the per-session budget. Path-safety enforced (no `..`, no leading `/`, `EXCLUDE_PATTERNS` honored). Per-session caps default to 80 distinct (path, range) reads, 1 MB returned per read (truncated above), 30 model turns — tune via `AGENTIC_MAX_FILES` / `AGENTIC_MAX_BYTES_PER_FILE` / `AGENTIC_MAX_TURNS` (or the matching `agentic_max_*` keys in `.github/ai-review.yml`). Dedup is by `(path, range)` — different ranges of the same file are independent reads.
 - **`submit_review(...)`** — single terminator. The model calls it once with the full review and the loop ends. The arguments use the same schema as the JSON response in single-shot mode, so the structured-output guarantee is the same.
 
 The token-usage step summary lists every file the model fetched and how many turns the session took, so cost is observable.
@@ -218,7 +218,7 @@ Or per-repo:
 agentic_review: true
 ```
 
-**Cost trade-off.** Each turn is a full round-trip with the model; with 3–5 reads typical and 8 max turns, you're paying ~2–6× the tokens of a single-shot review. With Anthropic prompt caching (enabled by default) the system block is read at ~10% on every turn after the first, so the marginal cost of additional turns is small. With OpenAI's automatic prefix caching the savings are similar but only kick in if the prefix is unchanged. Gemini has no caching today — every turn pays full freight.
+**Cost trade-off.** Each turn is a full round-trip with the model; with 3–5 reads typical and 30 max turns, you're paying ~2–6× the tokens of a single-shot review (more if the session approaches the cap). With Anthropic prompt caching (enabled by default) the system block is read at ~10% on every turn after the first, so the marginal cost of additional turns is small. With OpenAI's automatic prefix caching the savings are similar but only kick in if the prefix is unchanged. Gemini has no caching today — every turn pays full freight.
 
 **When NOT to use it.** Tiny repos. Tightly scoped diffs (one-file fixes). Cost-sensitive contexts where you'd rather pay $0.01 less per review than catch a missed-context bug. Start with it off, watch where the bot is wrong, decide.
 

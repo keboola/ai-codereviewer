@@ -46,9 +46,9 @@ describe('buildSystemPrompt', () => {
     const prompt = buildSystemPrompt(makeRequest({ agenticReview: true }));
     expect(prompt).toContain('Agentic mode');
     // Defaults from DEFAULT_AGENTIC_LIMITS
-    expect(prompt).toContain('At most 20 distinct');
-    expect(prompt).toContain('at most 200000 bytes');
-    expect(prompt).toContain('after 8 model turns');
+    expect(prompt).toContain('At most 80 distinct');
+    expect(prompt).toContain('at most 1000000 bytes');
+    expect(prompt).toContain('after 30 model turns');
     expect(prompt).toMatch(/MUST call .*submit_review/);
     expect(prompt).toMatch(/before any of those limits is hit/);
   });
