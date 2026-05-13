@@ -1405,9 +1405,9 @@ exports.executeReadFile = executeReadFile;
 const core = __importStar(__nccwpck_require__(7484));
 const minimatch_1 = __nccwpck_require__(6507);
 exports.DEFAULT_AGENTIC_LIMITS = {
-    maxFiles: 20,
-    maxBytesPerFile: 200000,
-    maxTurns: 8,
+    maxFiles: 80,
+    maxBytesPerFile: 1000000,
+    maxTurns: 30,
 };
 function makeAgenticEnv(opts) {
     var _a;
