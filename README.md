@@ -15,15 +15,24 @@ AI Code Reviewer is a GitHub Action that leverages multiple AI providers (OpenAI
 
 ## Setup
 
+> **Setting this up in a Keboola repo?** Follow the agent runbook:
+> [docs/SETUP-FOR-AGENTS.md](docs/SETUP-FOR-AGENTS.md) — a step-by-step guide
+> (new or existing repo, org-level secrets) suitable for an autonomous agent or
+> a human in a hurry.
+
 1. Choose your preferred AI provider and get an API key:
    - [OpenAI](https://platform.openai.com/api-keys)
    - [Anthropic](https://console.anthropic.com/account/keys)
    - [Google AI](https://makersuite.google.com/app/apikey)
 
-2. Add the API key as a GitHub Secret in your repository:
-   - `OPENAI_API_KEY` for OpenAI
-   - `ANTHROPIC_API_KEY` for Claude
-   - `GOOGLE_AI_KEY` for Google Gemini
+2. Add the API key as a GitHub Secret. At Keboola, these are **org-level
+   secrets** already provisioned for you — reference them directly, no per-repo
+   setup needed:
+   - `AI_CR_GOOGLE_API_KEY` for Google Gemini (Keboola default)
+   - `AI_CR_ANTHROPIC_API_KEY` for Claude (if provisioned)
+
+   Outside Keboola, add your own repo/org secret under any name (e.g.
+   `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_AI_KEY`) and reference it below.
 
 3. Create `.github/workflows/code-review.yml`:
 
@@ -60,14 +69,15 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: AI Code Review
-        uses: keboola/ai-code-reviewer@main
+        uses: keboola/ai-codereviewer@main
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-          # Choose your AI provider and key
-          AI_PROVIDER: "openai" # or "anthropic" or "google"
-          AI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          AI_MODEL: "gpt-4o-mini"
+          # Keboola default: Google Gemini via the org-level secret.
+          # Switch to "openai" / "anthropic" (and the matching key) if preferred.
+          AI_PROVIDER: "google" # or "openai" or "anthropic"
+          AI_API_KEY: ${{ secrets.AI_CR_GOOGLE_API_KEY }}
+          AI_MODEL: "gemini-3.1-pro-preview"
           AI_TEMPERATURE: 0.3 # 0 to 1 - higher values = more creativity and variance
 
           # Optional configurations
@@ -205,7 +215,7 @@ The token-usage step summary lists every file the model fetched and how many tur
 
 ```yaml
 # Central workflow — turn it on for everyone:
-- uses: keboola/ai-code-reviewer@main
+- uses: keboola/ai-codereviewer@main
   with:
     AGENTIC_REVIEW: true
     # ... other inputs
@@ -248,7 +258,7 @@ also works.
    ```
 3. In each consumer repo's workflow:
    ```yaml
-   - uses: keboola/ai-code-reviewer@main
+   - uses: keboola/ai-codereviewer@main
      with:
        INSTRUCTIONS_URL: "https://raw.githubusercontent.com/your-org/ai-review-config/main/instructions/backend.md"
        INSTRUCTIONS_FILE: ".github/ai-review.md"  # optional repo-specific extras
@@ -289,7 +299,7 @@ hundreds of repos):
 **3. Reference it from each consumer workflow:**
 
 ```yaml
-- uses: keboola/ai-code-reviewer@main
+- uses: keboola/ai-codereviewer@main
   with:
     INSTRUCTIONS_URL: "https://raw.githubusercontent.com/your-org/ai-review-config/main/instructions/backend.md"
     INSTRUCTIONS_URL_TOKEN: ${{ secrets.AI_REVIEW_INSTRUCTIONS_TOKEN }}
@@ -330,7 +340,7 @@ All models supported by the provider should be supported.
 GitHub Models is OpenAI-compatible, so the existing `openai` provider can route at it via `AI_BASE_URL`:
 
 ```yaml
-- uses: keboola/ai-code-reviewer@main
+- uses: keboola/ai-codereviewer@main
   with:
     AI_PROVIDER: "openai"
     AI_BASE_URL: "https://models.github.ai/inference"
