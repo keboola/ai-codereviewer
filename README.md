@@ -25,10 +25,14 @@ AI Code Reviewer is a GitHub Action that leverages multiple AI providers (OpenAI
    - [Anthropic](https://console.anthropic.com/account/keys)
    - [Google AI](https://makersuite.google.com/app/apikey)
 
-2. Add the API key as a GitHub Secret in your repository:
-   - `OPENAI_API_KEY` for OpenAI
-   - `ANTHROPIC_API_KEY` for Claude
-   - `GOOGLE_AI_KEY` for Google Gemini
+2. Add the API key as a GitHub Secret. At Keboola, these are **org-level
+   secrets** already provisioned for you — reference them directly, no per-repo
+   setup needed:
+   - `AI_CR_GOOGLE_API_KEY` for Google Gemini (Keboola default)
+   - `AI_CR_ANTHROPIC_API_KEY` for Claude (if provisioned)
+
+   Outside Keboola, add your own repo/org secret under any name (e.g.
+   `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_AI_KEY`) and reference it below.
 
 3. Create `.github/workflows/code-review.yml`:
 
@@ -69,10 +73,11 @@ jobs:
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-          # Choose your AI provider and key
-          AI_PROVIDER: "openai" # or "anthropic" or "google"
-          AI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          AI_MODEL: "gpt-4o-mini"
+          # Keboola default: Google Gemini via the org-level secret.
+          # Switch to "openai" / "anthropic" (and the matching key) if preferred.
+          AI_PROVIDER: "google" # or "openai" or "anthropic"
+          AI_API_KEY: ${{ secrets.AI_CR_GOOGLE_API_KEY }}
+          AI_MODEL: "gemini-3.1-pro-preview"
           AI_TEMPERATURE: 0.3 # 0 to 1 - higher values = more creativity and variance
 
           # Optional configurations
