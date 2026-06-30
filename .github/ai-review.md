@@ -16,6 +16,31 @@ addition to the generic guidance.
   - "`gpt-4o` works on GitHub Models" — *wrong*; Models requires the
     `publisher/model` form (`openai/gpt-4o`).
 
+## Model identifiers — do NOT flag as nonexistent
+
+Your training data has a knowledge cutoff. Models released after that
+cutoff will look unfamiliar to you, but that does **not** mean they are
+invalid. **Never** raise a comment claiming a model ID "does not exist",
+"is not a valid model", "is not currently available", or suggesting a
+"downgrade" to an older model — that judgement is out of scope for a code
+review and you have no authoritative source for it (the API, not your
+memory, is the source of truth).
+
+The following identifiers are **known-valid current models** and must be
+treated as correct wherever they appear (workflows, README, docs, this
+runbook):
+
+- Google: `gemini-3.1-pro-preview` (the model running *this* review),
+  and any `gemini-3.x` / later id.
+- Anthropic: `claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-5`,
+  and any later Claude 4.x / Fable id.
+- OpenAI: any current `gpt-4.x` / `o`-series id.
+
+If you believe a model id is genuinely *malformed* (e.g. wrong provider
+namespace like a missing `publisher/` prefix on GitHub Models), cite the
+exact provider doc that defines the required format. Absent such a
+citation, say nothing about the model id.
+
 ## Use read_file aggressively (with line ranges)
 
 This repo runs in agentic mode (`agentic_review: true`). When the diff
