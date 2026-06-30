@@ -15,6 +15,11 @@ AI Code Reviewer is a GitHub Action that leverages multiple AI providers (OpenAI
 
 ## Setup
 
+> **Setting this up in a Keboola repo?** Follow the agent runbook:
+> [docs/SETUP-FOR-AGENTS.md](docs/SETUP-FOR-AGENTS.md) — a step-by-step guide
+> (new or existing repo, org-level secrets) suitable for an autonomous agent or
+> a human in a hurry.
+
 1. Choose your preferred AI provider and get an API key:
    - [OpenAI](https://platform.openai.com/api-keys)
    - [Anthropic](https://console.anthropic.com/account/keys)
