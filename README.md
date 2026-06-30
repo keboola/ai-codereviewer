@@ -65,7 +65,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: AI Code Review
-        uses: keboola/ai-code-reviewer@main
+        uses: keboola/ai-codereviewer@main
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -210,7 +210,7 @@ The token-usage step summary lists every file the model fetched and how many tur
 
 ```yaml
 # Central workflow — turn it on for everyone:
-- uses: keboola/ai-code-reviewer@main
+- uses: keboola/ai-codereviewer@main
   with:
     AGENTIC_REVIEW: true
     # ... other inputs
@@ -253,7 +253,7 @@ also works.
    ```
 3. In each consumer repo's workflow:
    ```yaml
-   - uses: keboola/ai-code-reviewer@main
+   - uses: keboola/ai-codereviewer@main
      with:
        INSTRUCTIONS_URL: "https://raw.githubusercontent.com/your-org/ai-review-config/main/instructions/backend.md"
        INSTRUCTIONS_FILE: ".github/ai-review.md"  # optional repo-specific extras
@@ -294,7 +294,7 @@ hundreds of repos):
 **3. Reference it from each consumer workflow:**
 
 ```yaml
-- uses: keboola/ai-code-reviewer@main
+- uses: keboola/ai-codereviewer@main
   with:
     INSTRUCTIONS_URL: "https://raw.githubusercontent.com/your-org/ai-review-config/main/instructions/backend.md"
     INSTRUCTIONS_URL_TOKEN: ${{ secrets.AI_REVIEW_INSTRUCTIONS_TOKEN }}
@@ -335,7 +335,7 @@ All models supported by the provider should be supported.
 GitHub Models is OpenAI-compatible, so the existing `openai` provider can route at it via `AI_BASE_URL`:
 
 ```yaml
-- uses: keboola/ai-code-reviewer@main
+- uses: keboola/ai-codereviewer@main
   with:
     AI_PROVIDER: "openai"
     AI_BASE_URL: "https://models.github.ai/inference"
