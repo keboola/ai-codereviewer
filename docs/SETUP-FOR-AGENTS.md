@@ -14,11 +14,13 @@ as **organization-level secrets** — you do *not* create or paste any keys.
 For a standard Keboola repo, do exactly this:
 
 1. Commit `.github/workflows/code-review.yml` (template in Step 1).
-2. Optionally commit `.github/ai-review.yml` (per-repo tuning, Step 2) and
-   `.github/ai-review.md` (repo-specific review rules, Step 3).
-3. Confirm the org secret `AI_CR_GOOGLE_API_KEY` is visible to the repo (Step 4).
-4. Confirm `keboola/ai-codereviewer` is an allowed action (Step 5).
-5. Open a throwaway PR to verify a review appears (Step 6).
+2. Optionally commit `.github/ai-review.yml` (per-repo tuning, Step 2).
+3. Commit `.github/ai-review.md` (repo-specific review rules, Step 3). This is
+   **not** optional in practice: it must carry the model-identifier allowlist,
+   without which the reviewer will flag your configured `AI_MODEL` as invalid.
+4. Confirm the org secret `AI_CR_GOOGLE_API_KEY` is visible to the repo (Step 4).
+5. Confirm `keboola/ai-codereviewer` is an allowed action (Step 5).
+6. Open a throwaway PR to verify a review appears (Step 6).
 
 That's it. Everything below is the detail behind those steps.
 
@@ -31,6 +33,7 @@ That's it. Everything below is the detail behind those steps.
 | Action reference | `keboola/ai-codereviewer@main` | `keboola/ai-code-reviewer` (with hyphen) — **wrong**, that repo does not exist |
 | Default provider for Keboola | `google` | defaulting to OpenAI |
 | Default model | `gemini-3.1-pro-preview` | older gemini/gpt models |
+| `.github/ai-review.md` | must include the **model-identifier allowlist** (Step 3) | omitting it → reviewer flags `gemini-3.1-pro-preview` as a "typo/invalid model" on the first PR |
 | Org secret (Google) | `secrets.AI_CR_GOOGLE_API_KEY` | `GOOGLE_AI_KEY` (that's only in the generic README example) |
 | Workflow `GITHUB_TOKEN` | `secrets.GITHUB_TOKEN` (auto-provided) | inventing a PAT |
 
@@ -181,10 +184,49 @@ Notes:
 
 ---
 
-## Step 3 — (Optional) repo-specific review rules: `.github/ai-review.md`
+## Step 3 — repo-specific review rules: `.github/ai-review.md`
 
 Free-form Markdown appended to the system prompt; it overrides generic guidance
-on conflict. Write rules that encode this repo's real conventions:
+on conflict. **Always commit this file** — even if you have no repo-specific
+conventions yet, it must carry the **model-identifier allowlist** below.
+
+### Required: the model-identifier allowlist
+
+The reviewer runs on a model (`gemini-3.1-pro-preview` by default) whose *own*
+training cutoff predates that model id. Without this block it will confidently —
+and ironically — flag your configured `AI_MODEL` as a "typo", "invalid model",
+or "not currently available" and tell you to downgrade to an older `gemini-1.5`
+id, on the very first PR. Paste this verbatim into `.github/ai-review.md`:
+
+```markdown
+## Model identifiers — do NOT flag as nonexistent
+
+Your training data has a knowledge cutoff. Models released after that
+cutoff will look unfamiliar to you, but that does **not** mean they are
+invalid. **Never** raise a comment claiming a model ID "does not exist",
+"is not a valid model", "is not currently available", or suggesting a
+"downgrade" to an older model — that judgement is out of scope for a code
+review and you have no authoritative source for it (the API, not your
+memory, is the source of truth).
+
+The following identifiers are **known-valid current models** and must be
+treated as correct wherever they appear (workflows, README, docs):
+
+- Google: `gemini-3.1-pro-preview` (the model running *this* review),
+  and any `gemini-3.x` / later id.
+- Anthropic: `claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-5`,
+  and any later Claude 4.x / Fable id.
+- OpenAI: any current `gpt-4.x` / `o`-series id.
+
+If you believe a model id is genuinely *malformed* (e.g. wrong provider
+namespace like a missing `publisher/` prefix on GitHub Models), cite the
+exact provider doc that defines the required format. Absent such a
+citation, say nothing about the model id.
+```
+
+### Then add this repo's real conventions
+
+Below the allowlist, write rules that encode this repo's actual conventions:
 
 ```markdown
 # Review instructions for this repo
@@ -275,8 +317,10 @@ comments and approvals.
 
 ## New repo vs. existing repo
 
-- **New repo:** create `.github/workflows/` and drop the workflow in. Nothing
-  else differs. The first PR after the default branch exists will be reviewed.
+- **New repo:** create `.github/workflows/` and drop the workflow in, and still
+  commit `.github/ai-review.md` with the model-identifier allowlist (Step 3) —
+  otherwise the first PR gets a bogus "invalid model" comment. The first PR after
+  the default branch exists will be reviewed.
 - **Existing repo:** same workflow, but invest more in tailoring:
   - Set `EXCLUDE_PATTERNS` to this repo's generated/vendored paths.
   - Add `.github/ai-review.yml` with `context_files` (manifests, tsconfig, etc.)
@@ -299,6 +343,7 @@ comments and approvals.
 | "Resource not accessible by integration" | Read-only workflow permissions | Step 5 workflow permissions / keep `permissions: write-all` |
 | Action blocked by policy | Org allowed-actions restriction | Step 5, ask org admin |
 | Reviews too noisy | severity too low / max too high | Raise `MIN_COMMENT_SEVERITY` to `major`, lower `MAX_COMMENTS` |
+| Bot flags `AI_MODEL` as invalid / "typo" / says to downgrade | `.github/ai-review.md` missing the model-identifier allowlist; reviewer's training cutoff predates the model id | Add the allowlist block from Step 3 and re-trigger (apply the `ai-review` label) |
 | Wrong comments from missing context | diff-only review on a big repo | Enable `agentic_review: true` + add `context_files` (Step 2) |
 
 ---
