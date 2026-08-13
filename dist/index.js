@@ -1598,12 +1598,15 @@ class DiffService {
         core.debug(`Excluding patterns: ${this.excludePatterns.join(', ')}`);
         return files
             .filter(file => {
-            var _a;
-            const filePath = (_a = file.to) !== null && _a !== void 0 ? _a : '';
-            const shouldExclude = this.excludePatterns.some(pattern => (0, minimatch_1.minimatch)(filePath, pattern, { matchBase: true, dot: true }));
-            core.debug(`File: ${filePath}, shouldExclude: ${shouldExclude}`);
+            // For deleted files, parse-diff sets file.to to "/dev/null" and puts the
+            // real path in file.from (and vice versa is not applicable for additions,
+            // where file.from is "/dev/null"). Match exclude patterns against every
+            // real path the file is known by, so deletions can still be excluded.
+            const candidatePaths = [file.to, file.from].filter((p) => !!p && p !== '/dev/null');
+            const shouldExclude = candidatePaths.some(candidatePath => this.excludePatterns.some(pattern => (0, minimatch_1.minimatch)(candidatePath, pattern, { matchBase: true, dot: true })));
+            core.debug(`File: ${candidatePaths.join(', ')}, shouldExclude: ${shouldExclude}`);
             if (shouldExclude) {
-                core.debug(`Excluding diff file based on pattern: ${filePath}`);
+                core.debug(`Excluding diff file based on pattern: ${candidatePaths.join(', ')}`);
                 return false;
             }
             return true;

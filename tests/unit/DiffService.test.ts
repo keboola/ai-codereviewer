@@ -31,6 +31,27 @@ index abc..def 100644
 +console.log("new line");
  console.log("end");`;
 
+  // For deleted files, parse-diff sets `to` to "/dev/null" and keeps the real
+  // path in `from`. This diff deletes a large fixture that matches
+  // "fixtures/**" and a source file that does not match any pattern.
+  const mockDeletedFilesDiffResponse = `diff --git a/fixtures/large-fixture.json b/fixtures/large-fixture.json
+deleted file mode 100644
+index abc..000 100644
+--- a/fixtures/large-fixture.json
++++ /dev/null
+@@ -1,3 +0,0 @@
+-{
+-  "big": "fixture"
+-}
+diff --git a/src/kept.ts b/src/kept.ts
+deleted file mode 100644
+index def..000 100644
+--- a/src/kept.ts
++++ /dev/null
+@@ -1,2 +0,0 @@
+-console.log("kept");
+-console.log("also kept");`;
+
   beforeEach(() => {
     // Reset mocks
     (global.fetch as jest.Mock).mockReset();
@@ -67,5 +88,32 @@ index abc..def 100644
     expect(lines.has(2)).toBe(true); // added
     expect(lines.has(3)).toBe(true); // context below
     expect(lines.has(99)).toBe(false);
+  });
+
+  it('should exclude a deleted file whose real (pre-deletion) path matches an exclude pattern', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      text: async () => mockDeletedFilesDiffResponse
+    });
+
+    // Deleted files have `to === "/dev/null"`; the real path lives in `from`.
+    // Only the fixture deletion should match "fixtures/**" and be dropped.
+    const service = new DiffService('mock-github-token', 'fixtures/**');
+    const files = await service.getRelevantFiles(mockPRDetails);
+
+    expect(files.length).toBe(1);
+    expect(files.some(f => f.diff.includes('"big": "fixture"'))).toBe(false);
+  });
+
+  it('should keep a deleted file whose real path does not match any exclude pattern', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      text: async () => mockDeletedFilesDiffResponse
+    });
+
+    const service = new DiffService('mock-github-token', 'fixtures/**');
+    const files = await service.getRelevantFiles(mockPRDetails);
+
+    expect(files.some(f => f.diff.includes('console.log("kept");'))).toBe(true);
   });
 });
