@@ -1596,26 +1596,47 @@ class DiffService {
     }
     filterRelevantFiles(files) {
         core.debug(`Excluding patterns: ${this.excludePatterns.join(', ')}`);
-        return files
-            .filter(file => {
-            var _a;
-            const filePath = (_a = file.to) !== null && _a !== void 0 ? _a : '';
-            const shouldExclude = this.excludePatterns.some(pattern => (0, minimatch_1.minimatch)(filePath, pattern, { matchBase: true, dot: true }));
-            core.debug(`File: ${filePath}, shouldExclude: ${shouldExclude}`);
-            if (shouldExclude) {
-                core.debug(`Excluding diff file based on pattern: ${filePath}`);
-                return false;
+        const relevantFiles = [];
+        for (const file of files) {
+            const effectivePath = this.getEffectivePath(file);
+            if (!effectivePath) {
+                // No real path to review (neither side is a concrete file) — skip.
+                continue;
             }
-            return true;
-        })
-            .map(file => {
-            var _a;
-            return ({
-                path: (_a = file.to) !== null && _a !== void 0 ? _a : '',
+            const shouldExclude = this.excludePatterns.some(pattern => (0, minimatch_1.minimatch)(effectivePath, pattern, { matchBase: true, dot: true }));
+            core.debug(`File: ${effectivePath}, shouldExclude: ${shouldExclude}`);
+            if (shouldExclude) {
+                core.debug(`Excluding diff file based on pattern: ${effectivePath}`);
+                continue;
+            }
+            relevantFiles.push({
+                path: effectivePath,
                 diff: this.formatDiff(file),
                 validRightLines: this.collectRightLines(file),
             });
-        });
+        }
+        return relevantFiles;
+    }
+    /**
+     * The single real path that identifies a diff entry, used both to match
+     * EXCLUDE_PATTERNS and as the downstream `RelevantFile.path`.
+     *
+     * The destination path (`file.to`) decides inclusion in every case except a
+     * deletion: additions and modifications carry the real path in `file.to`, and
+     * for a rename the destination is what matters — a file moved *out of* an
+     * excluded dir into a reviewed one must still be reviewed, while one moved
+     * *into* an excluded dir must be dropped. For a deletion parse-diff sets
+     * `file.to` to "/dev/null", so fall back to the real pre-deletion path in
+     * `file.from` (this keeps deletions excludable and avoids a "/dev/null" path
+     * downstream, which would collide across multiple deletions).
+     */
+    getEffectivePath(file) {
+        const isReal = (p) => !!p && p !== '/dev/null';
+        if (isReal(file.to))
+            return file.to;
+        if (isReal(file.from))
+            return file.from;
+        return undefined;
     }
     formatDiff(file) {
         return file.chunks
