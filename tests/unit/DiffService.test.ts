@@ -52,6 +52,35 @@ index def..000 100644
 -console.log("kept");
 -console.log("also kept");`;
 
+  // Rename OUT of an excluded dir: parse-diff sets `from` to the old (excluded)
+  // path and `to` to the new (included) path. The file now lives in src/ and
+  // must still be reviewed — the destination path decides inclusion.
+  const mockRenameOutOfExcludedDiffResponse = `diff --git a/vendor/lib.ts b/src/lib.ts
+similarity index 80%
+rename from vendor/lib.ts
+rename to src/lib.ts
+index abc..def 100644
+--- a/vendor/lib.ts
++++ b/src/lib.ts
+@@ -1,2 +1,2 @@
+ const a = 1;
+-const b = 2;
++const b = 3;`;
+
+  // Rename INTO an excluded dir: the destination path matches the pattern, so
+  // the file must be excluded.
+  const mockRenameIntoExcludedDiffResponse = `diff --git a/src/lib.ts b/vendor/lib.ts
+similarity index 80%
+rename from src/lib.ts
+rename to vendor/lib.ts
+index abc..def 100644
+--- a/src/lib.ts
++++ b/vendor/lib.ts
+@@ -1,2 +1,2 @@
+ const a = 1;
+-const b = 2;
++const b = 3;`;
+
   beforeEach(() => {
     // Reset mocks
     (global.fetch as jest.Mock).mockReset();
@@ -115,5 +144,49 @@ index def..000 100644
     const files = await service.getRelevantFiles(mockPRDetails);
 
     expect(files.some(f => f.diff.includes('console.log("kept");'))).toBe(true);
+  });
+
+  it('should expose the real pre-deletion path for a kept deleted file (not /dev/null)', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      text: async () => mockDeletedFilesDiffResponse
+    });
+
+    const service = new DiffService('mock-github-token', 'fixtures/**');
+    const files = await service.getRelevantFiles(mockPRDetails);
+
+    const kept = files.find(f => f.diff.includes('console.log("kept");'));
+    expect(kept).toBeDefined();
+    // Downstream lookups key off `path`; a deleted file must carry its real
+    // pre-deletion path, never "/dev/null" (which collides across deletions).
+    expect(kept!.path).toBe('src/kept.ts');
+  });
+
+  it('should keep a file renamed OUT of an excluded dir (destination path decides)', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      text: async () => mockRenameOutOfExcludedDiffResponse
+    });
+
+    const service = new DiffService('mock-github-token', 'vendor/**');
+    const files = await service.getRelevantFiles(mockPRDetails);
+
+    // Moved from vendor/ (excluded) into src/ (reviewed): must be kept, keyed
+    // by its new path.
+    expect(files.length).toBe(1);
+    expect(files[0].path).toBe('src/lib.ts');
+  });
+
+  it('should exclude a file renamed INTO an excluded dir (destination path decides)', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      text: async () => mockRenameIntoExcludedDiffResponse
+    });
+
+    const service = new DiffService('mock-github-token', 'vendor/**');
+    const files = await service.getRelevantFiles(mockPRDetails);
+
+    // Moved into vendor/ (excluded): must be dropped.
+    expect(files.length).toBe(0);
   });
 });
