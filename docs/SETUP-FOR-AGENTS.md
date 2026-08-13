@@ -35,7 +35,7 @@ That's it. Everything below is the detail behind those steps.
 | Default model | `gemini-3.1-pro-preview` | older gemini/gpt models |
 | `.github/ai-review.md` | must include the **model-identifier allowlist** (Step 3) | omitting it → reviewer flags `gemini-3.1-pro-preview` as a "typo/invalid model" on the first PR |
 | Org secret (Google) | `secrets.AI_CR_GOOGLE_API_KEY` | `GOOGLE_AI_KEY` (that's only in the generic README example) |
-| Workflow `GITHUB_TOKEN` | `secrets.GITHUB_TOKEN` (auto-provided) | inventing a PAT |
+| Workflow `GITHUB_TOKEN` | `secrets.GITHUB_TOKEN` (auto-provided), or a GitHub App token for a named bot identity — see [GITHUB-APP-IDENTITY.md](GITHUB-APP-IDENTITY.md) | inventing a PAT |
 
 > **Verify the secret name before you commit.** The known org secret is
 > `AI_CR_GOOGLE_API_KEY`. If an Anthropic key exists it is conventionally

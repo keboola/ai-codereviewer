@@ -20,6 +20,11 @@ AI Code Reviewer is a GitHub Action that leverages multiple AI providers (OpenAI
 > (new or existing repo, org-level secrets) suitable for an autonomous agent or
 > a human in a hurry.
 
+> **Reviews showing up as `github-actions[bot]`?** That is the identity every
+> workflow in a repo shares. To sign them as a named bot instead, see
+> [docs/GITHUB-APP-IDENTITY.md](docs/GITHUB-APP-IDENTITY.md) — one org-level
+> GitHub App, one extra workflow step, no change to the action.
+
 1. Choose your preferred AI provider and get an API key:
    - [OpenAI](https://platform.openai.com/api-keys)
    - [Anthropic](https://console.anthropic.com/account/keys)
